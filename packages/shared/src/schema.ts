@@ -57,6 +57,8 @@ export const AgentSchema = z.object({
   chatter_posts_today: z.number().int().default(0),
   last_reset_company_date: z.string().nullable().default(null),
   last_reflection_at: z.string().nullable().default(null),
+  // Day 5: per-agent tool access whitelist
+  tool_access: z.array(z.string()).default([]),
   created_at: z.string(),
   updated_at: z.string(),
 });

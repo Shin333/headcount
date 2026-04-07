@@ -13,6 +13,8 @@ const ServerEnvSchema = z.object({
   CHATTER_POSTS_PER_AGENT_PER_DAY: z.coerce.number().int().positive().default(3),
   REFLECTION_WALL_INTERVAL_HOURS: z.coerce.number().int().positive().default(1),
   CHATTER_ENABLED: z.coerce.boolean().default(true),
+  // Day 5: Tavily web search backend (optional - tools degrade gracefully if missing)
+  TAVILY_API_KEY: z.string().min(1).optional(),
 });
 
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;

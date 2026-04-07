@@ -2,6 +2,7 @@ import { db } from "../db.js";
 import { config } from "../config.js";
 import { runAgentTurn, isOverHourlyCap } from "../agents/runner.js";
 import { postToForum } from "../comms/forum.js";
+import { getUnreadDmContextFor } from "../comms/dm.js";
 import { Channels, AgentSchema } from "@headcount/shared";
 import type { Agent } from "@headcount/shared";
 
@@ -122,14 +123,18 @@ export async function maybeRunChatter(clock: ChatterContext): Promise<void> {
 
   const trigger = `Post ONE message in the #watercooler channel. Keep it short - 1 to 3 sentences. Stay in character. Be specific to the moment - reference the time of day, something happening, an observation. Do NOT post a generic greeting. Do NOT introduce yourself. Do NOT explain that you are taking a break - just speak.\n\nIf you have nothing to say right now that would feel authentic, respond with exactly the single word: SKIP`;
 
+  // Day 4: fetch unread DMs for this agent and prepend to context (also marks them read)
+  const unreadDmContext = await getUnreadDmContextFor(chosen.id);
+
   const contextBlock = [
+    unreadDmContext, // empty string if no unread DMs - safe to concat
     `Channel you're posting to: #watercooler`,
     `Current company time: ${formatCompanyTime(clock.company_time)}`,
     `This is the casual hangout space. People drop in to comment on the day, share small things, react to office life. NOT for work decisions, NOT for clients, NOT for serious announcements.`,
     ``,
     `Recent posts in #watercooler:`,
     recentSummary,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 
   const result = await runAgentTurn({
     agent: chosen,

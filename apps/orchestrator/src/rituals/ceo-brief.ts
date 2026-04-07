@@ -2,7 +2,7 @@ import { db } from "../db.js";
 import { config } from "../config.js";
 import { runAgentTurn, isOverHourlyCap } from "../agents/runner.js";
 import { postToForum } from "../comms/forum.js";
-import { sendDm } from "../comms/dm.js";
+import { sendDm, getUnreadDmContextFor, getCompanyDmsSnapshot } from "../comms/dm.js";
 import { Channels, AgentSchema } from "@headcount/shared";
 import type { Agent } from "@headcount/shared";
 
@@ -125,14 +125,28 @@ Structure your brief in exactly this format (use these headers, fill in the cont
 
 Stay in your voice - dry, observant, edited. Cut anything that does not earn its place. If today is genuinely quiet, the brief should be short. Quiet briefs are correct briefs on quiet days. Do not invent drama.`;
 
+  // Day 4: fetch Eleanor's own unread DMs (including any from CEO)
+  const eleanorUnreadDms = await getUnreadDmContextFor(eleanor.id);
+
+  // Day 4: get a tenant-wide DM activity snapshot since start of company day
+  const startOfCompanyDayIso = new Date(ctx.company_date + "T00:00:00Z").toISOString();
+  const dmSnapshot = await getCompanyDmsSnapshot(startOfCompanyDayIso);
+
+  const dmActivityLine =
+    dmSnapshot.totalCount > 0
+      ? `DM activity today: ${dmSnapshot.totalCount} messages (${dmSnapshot.fromCeoCount} from CEO, ${dmSnapshot.toCeoCount} to CEO)`
+      : `DM activity today: none`;
+
   const contextBlock = [
+    eleanorUnreadDms, // empty string if no unread DMs - safe to concat
     `You are writing the CEO Brief for ${ctx.company_date}.`,
     `Current company time: ${formatCompanyTime(ctx.company_time)}`,
+    dmActivityLine,
     ``,
     `Here are today's standup posts from your team:`,
     ``,
     standupContent,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 
   const result = await runAgentTurn({
     agent: eleanor,

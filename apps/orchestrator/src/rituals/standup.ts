@@ -2,6 +2,7 @@ import { db } from "../db.js";
 import { config } from "../config.js";
 import { runAgentTurn, isOverHourlyCap } from "../agents/runner.js";
 import { postToForum } from "../comms/forum.js";
+import { getUnreadDmContextFor } from "../comms/dm.js";
 import { Channels, AgentSchema } from "@headcount/shared";
 import type { Agent } from "@headcount/shared";
 
@@ -119,7 +120,11 @@ export async function maybeRunStandup(ctx: StandupContext): Promise<void> {
 
     const trigger = buildStandupTrigger(agent.role);
 
+    // Day 4: fetch unread DMs for this agent (also marks them read)
+    const unreadDmContext = await getUnreadDmContextFor(agent.id);
+
     const contextBlock = [
+      unreadDmContext, // empty string if no unread DMs - safe to concat
       `Channel you are posting to: #standup`,
       `Current company time: ${formatCompanyTime(ctx.company_time)}`,
       `Today is ${ctx.company_date}.`,
@@ -128,7 +133,7 @@ export async function maybeRunStandup(ctx: StandupContext): Promise<void> {
       ``,
       `Recent activity in the company forum (last 20 posts across all channels):`,
       recentForumSummary || "(forum is empty - this is the very first standup)",
-    ].join("\n");
+    ].filter(Boolean).join("\n");
 
     const result = await runAgentTurn({
       agent,
