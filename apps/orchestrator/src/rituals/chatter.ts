@@ -10,7 +10,7 @@ import type { Agent } from "@headcount/shared";
 // ----------------------------------------------------------------------------
 // Runs once per company hour during office hours. Picks one agent who has
 // something to say, gives them recent context, and lets them post a casual
-// message. Caps + smart skipping prevent spam and runaway costs.
+// message. Caps prevent spam and runaway costs.
 // ----------------------------------------------------------------------------
 
 interface ChatterContext {
@@ -83,17 +83,10 @@ export async function maybeRunChatter(clock: ChatterContext): Promise<void> {
     .order("created_at", { ascending: false })
     .limit(8);
 
-  // Smart skip: channel was very active recently
-  if (recentPosts && recentPosts.length >= 5) {
-    const newest = new Date(recentPosts[0].created_at).getTime();
-    const fifth = new Date(recentPosts[4].created_at).getTime();
-    const spanMinutes = (newest - fifth) / 1000 / 60;
-    if (spanMinutes < 30) {
-      console.log("[chatter] skipped: channel already chatty");
-      await markChatterHour(companyHour, companyDate);
-      return;
-    }
-  }
+  // Day 2b.4: smart-skip removed. It compared wall-clock timestamps but at
+  // 60x speed it deadlocked the channel forever. The other three caps
+  // (once-per-company-hour ritual_state, per-agent daily post cap, hourly
+  // cost cap) already prevent runaway chatter without this defense.
 
   const lastAuthorId = recentPosts?.[0]?.author_id;
   const candidates = agents.filter((a) => a.id !== lastAuthorId);
