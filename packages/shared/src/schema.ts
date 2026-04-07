@@ -52,6 +52,11 @@ export const AgentSchema = z.object({
   status: z.enum(["active", "paused", "terminated"]),
   daily_token_budget: z.number().int(),
   tokens_used_today: z.number().int(),
+  // Day 2b additions
+  addendum_loop_active: z.boolean().default(false),
+  chatter_posts_today: z.number().int().default(0),
+  last_reset_company_date: z.string().nullable().default(null),
+  last_reflection_at: z.string().nullable().default(null),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -73,6 +78,40 @@ export const ForumPostSchema = z.object({
 export type ForumPost = z.infer<typeof ForumPostSchema>;
 
 // ============================================================================
+// DM
+// ============================================================================
+export const DmSchema = z.object({
+  id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  from_id: z.string().uuid(),
+  to_id: z.string().uuid(),
+  body: z.string(),
+  read_at: z.string().nullable(),
+  created_at: z.string(),
+});
+export type Dm = z.infer<typeof DmSchema>;
+
+// ============================================================================
+// PROMPT EVOLUTION LOG (addendum proposals)
+// ============================================================================
+export const ProposalStatusSchema = z.enum(["pending", "approved", "rejected", "applied"]);
+export type ProposalStatus = z.infer<typeof ProposalStatusSchema>;
+
+export const PromptEvolutionEntrySchema = z.object({
+  id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  agent_id: z.string().uuid(),
+  old_value: z.string().nullable(),
+  new_value: z.string().nullable(),
+  reason: z.string().nullable(),
+  proposed_by: z.string(),
+  status: ProposalStatusSchema,
+  reviewed_by_ceo_at: z.string().nullable(),
+  created_at: z.string(),
+});
+export type PromptEvolutionEntry = z.infer<typeof PromptEvolutionEntrySchema>;
+
+// ============================================================================
 // CHANNELS (canonical list)
 // ============================================================================
 export const Channels = {
@@ -84,3 +123,12 @@ export const Channels = {
 } as const;
 
 export type Channel = (typeof Channels)[keyof typeof Channels];
+
+// ============================================================================
+// COST CONFIG (used for the wall-hour cap)
+// ============================================================================
+export const COST_PER_M_TOKENS = {
+  sonnet: { input_fresh: 3.00, input_cached: 0.30, output: 15.00 },
+  haiku: { input_fresh: 1.00, input_cached: 0.10, output: 5.00 },
+  opus: { input_fresh: 5.00, input_cached: 0.50, output: 25.00 },
+} as const;

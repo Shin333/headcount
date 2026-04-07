@@ -8,6 +8,11 @@ const ServerEnvSchema = z.object({
   TICK_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
   SPEED_MULTIPLIER: z.coerce.number().positive().default(60),
   DAILY_TOKEN_CAP: z.coerce.number().int().positive().default(200000),
+  // Day 2b additions
+  HOURLY_COST_CAP_USD: z.coerce.number().positive().default(0.50),
+  CHATTER_POSTS_PER_AGENT_PER_DAY: z.coerce.number().int().positive().default(3),
+  REFLECTION_WALL_INTERVAL_HOURS: z.coerce.number().int().positive().default(1),
+  CHATTER_ENABLED: z.coerce.boolean().default(true),
 });
 
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;
