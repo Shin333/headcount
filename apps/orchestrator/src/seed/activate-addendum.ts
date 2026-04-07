@@ -5,25 +5,24 @@ import { config } from "../config.js";
 // ----------------------------------------------------------------------------
 // activate-addendum.ts - Day 2b
 // Flags two test agents as having the learned-addendum loop active.
-// Run AFTER `pnpm seed` to enable the reflection ritual on Rina + Yu-ting.
+// Run AFTER `pnpm seed`.
 // ----------------------------------------------------------------------------
 
 const ACTIVE_ROLES = [
   "Marketing Manager", // Rina Halim
-  "Sales Manager", // Chen Yu-ting
+  "Sales Manager",     // Chen Yu-ting
 ];
 
 async function main() {
   console.log("Activating addendum loop on test agents...");
   console.log("");
 
-  // First, deactivate everyone (idempotent reset)
+  // Reset everyone first (idempotent)
   await db
     .from("agents")
     .update({ addendum_loop_active: false })
     .eq("tenant_id", config.tenantId);
 
-  // Then activate the test set
   for (const role of ACTIVE_ROLES) {
     const { data, error } = await db
       .from("agents")
@@ -41,10 +40,9 @@ async function main() {
   }
 
   console.log("");
-  console.log("Done. The reflection ritual will now run for these agents on a wall-clock schedule.");
-  console.log(`Interval: 1 reflection per wall hour per active agent.`);
-  console.log("Proposed addendum changes will queue in prompt_evolution_log with status=pending.");
-  console.log("Review and approve them in the dashboard at /addendum.");
+  console.log("Done. The reflection ritual will now run for these agents.");
+  console.log("Proposed addendum changes will queue in prompt_evolution_log.");
+  console.log("Review and approve them in the dashboard addendum tab.");
   console.log("");
   process.exit(0);
 }

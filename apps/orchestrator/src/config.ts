@@ -1,11 +1,11 @@
+import "dotenv/config";
 import { loadServerEnv } from "@headcount/shared";
 
-const env = loadServerEnv();
+// Day 1 files (db.ts, claude.ts) import { env }; Day 2b files use { config }.
+// Both must coexist. This file is the single source of truth for env loading.
+export const env = loadServerEnv();
 
 export const config = {
-  supabaseUrl: env.SUPABASE_URL,
-  supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
-  anthropicApiKey: env.ANTHROPIC_API_KEY,
   tenantId: env.TENANT_ID,
   tickIntervalMs: env.TICK_INTERVAL_MS,
   speedMultiplier: env.SPEED_MULTIPLIER,
@@ -15,4 +15,4 @@ export const config = {
   chatterPostsPerAgentPerDay: env.CHATTER_POSTS_PER_AGENT_PER_DAY,
   reflectionWallIntervalHours: env.REFLECTION_WALL_INTERVAL_HOURS,
   chatterEnabled: env.CHATTER_ENABLED,
-};
+} as const;

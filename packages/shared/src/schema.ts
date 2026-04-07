@@ -78,7 +78,7 @@ export const ForumPostSchema = z.object({
 export type ForumPost = z.infer<typeof ForumPostSchema>;
 
 // ============================================================================
-// DM
+// DM (Day 2b)
 // ============================================================================
 export const DmSchema = z.object({
   id: z.string().uuid(),
@@ -92,7 +92,7 @@ export const DmSchema = z.object({
 export type Dm = z.infer<typeof DmSchema>;
 
 // ============================================================================
-// PROMPT EVOLUTION LOG (addendum proposals)
+// PROMPT EVOLUTION (Day 2b: addendum proposals)
 // ============================================================================
 export const ProposalStatusSchema = z.enum(["pending", "approved", "rejected", "applied"]);
 export type ProposalStatus = z.infer<typeof ProposalStatusSchema>;
@@ -125,7 +125,7 @@ export const Channels = {
 export type Channel = (typeof Channels)[keyof typeof Channels];
 
 // ============================================================================
-// COST CONFIG (used for the wall-hour cap)
+// COST CONFIG (Day 2b: used for the wall-hour cap)
 // ============================================================================
 export const COST_PER_M_TOKENS = {
   sonnet: { input_fresh: 3.00, input_cached: 0.30, output: 15.00 },

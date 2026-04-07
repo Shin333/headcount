@@ -114,7 +114,6 @@ export default function Home() {
     const proposalsChannel = supabase
       .channel("proposals-feed")
       .on("postgres_changes", { event: "*", schema: "public", table: "prompt_evolution_log" }, () => {
-        // Reload proposals on any change
         supabase
           .from("prompt_evolution_log")
           .select("*")
@@ -134,7 +133,6 @@ export default function Home() {
     };
   }, []);
 
-  // Group agents by department
   const agentsByDept = new Map<string, Agent[]>();
   for (const a of agentList) {
     const dept = a.department ?? "Other";
@@ -153,6 +151,7 @@ export default function Home() {
   const generalPosts = posts.filter((p) => p.channel !== "watercooler");
   const watercoolerPosts = posts.filter((p) => p.channel === "watercooler");
   const pendingProposals = proposals.filter((p) => p.status === "pending");
+  const addendumActiveAgents = agentList.filter((a) => a.addendum_loop_active);
 
   async function handleProposal(id: string, action: "approve" | "reject") {
     const res = await fetch(`/api/addendum/${id}`, {
@@ -166,6 +165,18 @@ export default function Home() {
     }
   }
 
+  async function handleForceReflection(agentId: string) {
+    const res = await fetch(`/api/reflect/${agentId}`, { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(`Failed: ${body.error ?? res.status}`);
+      return;
+    }
+    alert(
+      `Reflection queued for ${body.agentName}. The orchestrator will process it within ~10 wall seconds.`
+    );
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
       <header className="mb-8 border-b border-ink-200 pb-6">
@@ -173,7 +184,7 @@ export default function Home() {
           <h1 className="font-mono text-2xl font-semibold tracking-tight">
             headcount<span className="text-ink-400">/</span>ceo
           </h1>
-          <span className="font-mono text-xs text-ink-400">day 2b</span>
+          <span className="font-mono text-xs text-ink-400">day 2b.2</span>
         </div>
         <p className="mt-2 text-sm text-ink-600">
           {agentList.length} employees · {pendingProposals.length} pending addendum proposals
@@ -181,7 +192,6 @@ export default function Home() {
       </header>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_280px]">
-        {/* MAIN: Tabbed views */}
         <section>
           <div className="mb-4 flex items-center gap-1 border-b border-ink-200">
             {(["forum", "watercooler", "dms", "addendum"] as TabKey[]).map((tab) => {
@@ -197,9 +207,7 @@ export default function Home() {
                   key={tab}
                   onClick={() => setActiveTab(tab)}
                   className={`px-3 py-2 font-mono text-xs uppercase tracking-wider transition ${
-                    isActive
-                      ? "border-b-2 border-ink-900 text-ink-900"
-                      : "text-ink-400 hover:text-ink-600"
+                    isActive ? "border-b-2 border-ink-900 text-ink-900" : "text-ink-400 hover:text-ink-600"
                   }`}
                 >
                   {labels[tab]}
@@ -209,9 +217,7 @@ export default function Home() {
           </div>
 
           {loading && (
-            <div className="rounded-lg border border-ink-200 bg-white p-6 text-sm text-ink-400">
-              Loading...
-            </div>
+            <div className="rounded-lg border border-ink-200 bg-white p-6 text-sm text-ink-400">Loading...</div>
           )}
 
           {!loading && activeTab === "forum" && (
@@ -219,19 +225,39 @@ export default function Home() {
           )}
 
           {!loading && activeTab === "watercooler" && (
-            <PostList posts={watercoolerPosts} agents={agents} emptyMessage="The watercooler is empty. Chatter ritual will fire during company office hours (09:00 - 18:00)." />
+            <PostList posts={watercoolerPosts} agents={agents} emptyMessage="The watercooler is empty. Chatter ritual fires during company office hours (09:00 - 18:00)." />
           )}
 
-          {!loading && activeTab === "dms" && (
-            <DmList dms={dms} agents={agents} />
-          )}
+          {!loading && activeTab === "dms" && <DmList dms={dms} agents={agents} />}
 
           {!loading && activeTab === "addendum" && (
-            <ProposalList proposals={proposals} agents={agents} onAction={handleProposal} />
+            <div className="space-y-4">
+              {addendumActiveAgents.length > 0 && (
+                <div className="rounded-lg border border-ink-200 bg-white p-3">
+                  <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-ink-400">
+                    force a reflection now (skips the wall-clock wait)
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {addendumActiveAgents.map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => handleForceReflection(a.id)}
+                        className="rounded border border-ink-200 bg-white px-3 py-1.5 font-mono text-xs text-ink-800 transition hover:border-ink-400 hover:bg-ink-100"
+                      >
+                        reflect: {a.name}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[10px] text-ink-400">
+                    Triggers an immediate reflection. The orchestrator picks it up within ~10 wall seconds.
+                  </p>
+                </div>
+              )}
+              <ProposalList proposals={proposals} agents={agents} onAction={handleProposal} />
+            </div>
           )}
         </section>
 
-        {/* SIDEBAR: Org chart */}
         <aside className="lg:sticky lg:top-10 lg:self-start">
           <div className="mb-4">
             <h2 className="font-mono text-xs uppercase tracking-wider text-ink-400">// org chart</h2>
@@ -266,25 +292,13 @@ export default function Home() {
       </div>
 
       <footer className="mt-16 border-t border-ink-200 pt-6 text-center font-mono text-xs text-ink-400">
-        headcount - phase 1 - day 2b
+        headcount - phase 1 - day 2b.2
       </footer>
     </main>
   );
 }
 
-// ----------------------------------------------------------------------------
-// Subcomponents
-// ----------------------------------------------------------------------------
-
-function PostList({
-  posts,
-  agents,
-  emptyMessage,
-}: {
-  posts: ForumPost[];
-  agents: Map<string, Agent>;
-  emptyMessage: string;
-}) {
+function PostList({ posts, agents, emptyMessage }: { posts: ForumPost[]; agents: Map<string, Agent>; emptyMessage: string }) {
   if (posts.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-ink-200 bg-white p-8 text-center">
@@ -316,7 +330,7 @@ function DmList({ dms, agents }: { dms: Dm[]; agents: Map<string, Agent> }) {
   if (dms.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-ink-200 bg-white p-8 text-center">
-        <p className="font-mono text-sm text-ink-400">No DMs yet. Agents will start sending each other DMs as Day 2b rituals run.</p>
+        <p className="font-mono text-sm text-ink-400">No DMs yet.</p>
       </div>
     );
   }
@@ -343,19 +357,11 @@ function DmList({ dms, agents }: { dms: Dm[]; agents: Map<string, Agent> }) {
   );
 }
 
-function ProposalList({
-  proposals,
-  agents,
-  onAction,
-}: {
-  proposals: AddendumProposal[];
-  agents: Map<string, Agent>;
-  onAction: (id: string, action: "approve" | "reject") => void;
-}) {
+function ProposalList({ proposals, agents, onAction }: { proposals: AddendumProposal[]; agents: Map<string, Agent>; onAction: (id: string, action: "approve" | "reject") => void }) {
   if (proposals.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-ink-200 bg-white p-8 text-center">
-        <p className="font-mono text-sm text-ink-400">No addendum proposals yet. The reflection ritual fires once per wall hour for active agents.</p>
+        <p className="font-mono text-sm text-ink-400">No addendum proposals yet.</p>
       </div>
     );
   }
@@ -363,12 +369,12 @@ function ProposalList({
     <ul className="space-y-3">
       {proposals.map((p) => {
         const agent = agents.get(p.agent_id);
-        const statusColor = {
+        const statusColor = ({
           pending: "text-amber-600",
           applied: "text-emerald-600",
           rejected: "text-ink-400",
           approved: "text-emerald-600",
-        }[p.status] ?? "text-ink-400";
+        } as Record<string, string>)[p.status] ?? "text-ink-400";
         return (
           <li key={p.id} className="rounded-lg border border-ink-200 bg-white p-4 shadow-sm">
             <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -389,18 +395,8 @@ function ProposalList({
             </div>
             {p.status === "pending" && (
               <div className="flex gap-2">
-                <button
-                  onClick={() => onAction(p.id, "approve")}
-                  className="rounded bg-emerald-600 px-3 py-1 font-mono text-xs uppercase tracking-wider text-white hover:bg-emerald-700"
-                >
-                  approve
-                </button>
-                <button
-                  onClick={() => onAction(p.id, "reject")}
-                  className="rounded border border-ink-200 px-3 py-1 font-mono text-xs uppercase tracking-wider text-ink-600 hover:bg-ink-100"
-                >
-                  reject
-                </button>
+                <button onClick={() => onAction(p.id, "approve")} className="rounded bg-emerald-600 px-3 py-1 font-mono text-xs uppercase tracking-wider text-white hover:bg-emerald-700">approve</button>
+                <button onClick={() => onAction(p.id, "reject")} className="rounded border border-ink-200 px-3 py-1 font-mono text-xs uppercase tracking-wider text-ink-600 hover:bg-ink-100">reject</button>
               </div>
             )}
           </li>

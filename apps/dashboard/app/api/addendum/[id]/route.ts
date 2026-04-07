@@ -1,13 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-// ----------------------------------------------------------------------------
-// /api/addendum/[id] - approve or reject a pending proposal
-// POST { action: "approve" | "reject" }
-// On approve: status -> applied, agent's learned_addendum is updated.
-// On reject: status -> rejected, no agent change.
-// ----------------------------------------------------------------------------
-
 function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -17,10 +10,7 @@ function adminClient() {
   return createClient(url, serviceKey);
 }
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const id = params.id;
   let body: { action?: string };
   try {
@@ -35,7 +25,6 @@ export async function POST(
 
   const db = adminClient();
 
-  // Load the proposal
   const { data: proposal, error: loadErr } = await db
     .from("prompt_evolution_log")
     .select("*")
@@ -47,19 +36,13 @@ export async function POST(
   }
 
   if (proposal.status !== "pending") {
-    return NextResponse.json(
-      { error: `Proposal already ${proposal.status}` },
-      { status: 409 }
-    );
+    return NextResponse.json({ error: `Proposal already ${proposal.status}` }, { status: 409 });
   }
 
   if (body.action === "reject") {
     await db
       .from("prompt_evolution_log")
-      .update({
-        status: "rejected",
-        reviewed_by_ceo_at: new Date().toISOString(),
-      })
+      .update({ status: "rejected", reviewed_by_ceo_at: new Date().toISOString() })
       .eq("id", id);
     return NextResponse.json({ ok: true, action: "rejected" });
   }
@@ -71,18 +54,12 @@ export async function POST(
     .eq("id", proposal.agent_id);
 
   if (updateErr) {
-    return NextResponse.json(
-      { error: "Failed to update agent: " + updateErr.message },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to update agent: " + updateErr.message }, { status: 500 });
   }
 
   await db
     .from("prompt_evolution_log")
-    .update({
-      status: "applied",
-      reviewed_by_ceo_at: new Date().toISOString(),
-    })
+    .update({ status: "applied", reviewed_by_ceo_at: new Date().toISOString() })
     .eq("id", id);
 
   return NextResponse.json({ ok: true, action: "applied" });
