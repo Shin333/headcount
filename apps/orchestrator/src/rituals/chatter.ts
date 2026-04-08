@@ -58,6 +58,8 @@ export async function maybeRunChatter(clock: ChatterContext): Promise<void> {
     .select("*")
     .eq("tenant_id", config.tenantId)
     .eq("status", "active")
+    .eq("is_human", false)
+    .eq("always_on", true)
     .lt("chatter_posts_today", config.chatterPostsPerAgentPerDay);
 
   if (!agentRows || agentRows.length === 0) {

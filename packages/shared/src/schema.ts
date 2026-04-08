@@ -59,6 +59,11 @@ export const AgentSchema = z.object({
   last_reflection_at: z.string().nullable().default(null),
   // Day 5: per-agent tool access whitelist
   tool_access: z.array(z.string()).default([]),
+  // Day 7: org structure additions
+  always_on: z.boolean().default(false),
+  in_standup: z.boolean().default(false),
+  is_human: z.boolean().default(false),
+  tic: z.string().nullable().default(null),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -163,3 +168,18 @@ export const ReportRunSchema = z.object({
   updated_at: z.string(),
 });
 export type ReportRun = z.infer<typeof ReportRunSchema>;
+
+// ============================================================================
+// DEPARTMENTS (Day 7: org structure)
+// ============================================================================
+export const DepartmentSchema = z.object({
+  id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  slug: z.string(),
+  display_name: z.string(),
+  description: z.string().nullable(),
+  display_order: z.number().int(),
+  head_agent_id: z.string().uuid().nullable(),
+  created_at: z.string(),
+});
+export type Department = z.infer<typeof DepartmentSchema>;

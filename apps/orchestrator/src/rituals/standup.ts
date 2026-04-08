@@ -7,33 +7,25 @@ import { Channels, AgentSchema } from "@headcount/shared";
 import type { Agent } from "@headcount/shared";
 
 // ----------------------------------------------------------------------------
-// rituals/standup.ts - the daily standup (Day 3)
+// rituals/standup.ts - the daily standup (Day 3, expanded Day 7)
 // ----------------------------------------------------------------------------
-// Runs at 09:30 company time, once per company day. Six designated agents
-// post structured updates to #standup in a fixed order:
+// Runs at 09:30 company time, once per company day. All agents with
+// in_standup=true post structured updates to #standup in a fixed order
+// determined by department display_order, then tier (exec → manager).
 //
-//   1. Eleanor Vance       (Chief of Staff)         - opens, sets the shape
-//   2. Han Jae-won         (Director of Strategy)   - strategic priorities
-//   3. Tessa Goh           (Director of Marketing)  - brand and content state
-//   4. Bradley Koh         (Director of Sales)      - pipeline and deals
-//   5. Tsai Wei-Ming       (Director of Engineering) - shipping and blockers
-//   6. Hoshino Ayaka       (Reality Checker)        - risks she is tracking
+// Day 7: filter is now data-driven — every agent with `in_standup=true AND
+// is_human=false AND status='active'` participates. The Shin Park CEO row
+// (is_human=true) is excluded. Dormant specialists (always_on=false) are
+// excluded by definition.
 //
-// Each post is a Sonnet call. Total per company day: ~6 Sonnet calls.
-// At 60x speed: ~$0.72 wall-day cost for standup alone.
+// Cost: each post is a Sonnet call. With ~10 standup seats post-Day 7,
+// roughly $0.05 per standup, ~$1.20 per wall day at 60x speed.
 //
-// Why directors only (not managers): directors carry cross-functional context.
-// Managers' tactical state surfaces through their director's post.
+// Why some managers are in standup but not all: PA-tier roles like Evie
+// have unique cross-functional intel that doesn't surface through their
+// "manager" otherwise. Most ICs do not — their state surfaces through
+// their director's post.
 // ----------------------------------------------------------------------------
-
-const STANDUP_ROLES_IN_ORDER = [
-  "Chief of Staff",
-  "Director of Strategy & Innovation",
-  "Director of Marketing",
-  "Director of Sales",
-  "Director of Engineering",
-  "Reality Checker (Quality & Risk)",
-];
 
 interface StandupContext {
   company_time: Date;
@@ -59,33 +51,92 @@ export async function maybeRunStandup(ctx: StandupContext): Promise<void> {
 
   console.log(`[standup] running for ${ctx.company_date}`);
 
-  // Load the 6 standup participants in order
-  const participants: Agent[] = [];
-  for (const role of STANDUP_ROLES_IN_ORDER) {
-    const { data: row } = await db
+  // Day 7: pull all standup participants via filter, not hardcoded list.
+  // Filter: active, non-human, in_standup=true. Order: Eleanor first
+  // (she runs the meeting), then by department display_order, then tier.
+  const { data: participantRows, error: participantErr } = await db
+    .from("agents")
+    .select("*, departments!inner(display_order)")
+    .eq("tenant_id", config.tenantId)
+    .eq("status", "active")
+    .eq("is_human", false)
+    .eq("in_standup", true);
+
+  if (participantErr) {
+    // Fallback path: the join may fail if departments table is missing or
+    // a participant's department doesn't have a row. Fall back to a plain
+    // query without ordering and let the constant Eleanor-first logic handle
+    // the rest.
+    console.warn(`[standup] department join failed (${participantErr.message}), falling back to plain query`);
+  }
+
+  let rawParticipants: Array<Record<string, unknown>> = participantRows ?? [];
+
+  if (!participantRows || participantRows.length === 0) {
+    const { data: fallbackRows } = await db
       .from("agents")
       .select("*")
       .eq("tenant_id", config.tenantId)
-      .eq("role", role)
       .eq("status", "active")
-      .maybeSingle();
-
-    if (!row) {
-      console.warn(`[standup] participant not found or inactive: ${role}`);
-      continue;
-    }
-    const parsed = AgentSchema.safeParse(row);
-    if (!parsed.success) {
-      console.warn(`[standup] schema validation failed for ${role}`);
-      continue;
-    }
-    participants.push(parsed.data);
+      .eq("is_human", false)
+      .eq("in_standup", true);
+    rawParticipants = fallbackRows ?? [];
   }
 
-  if (participants.length === 0) {
-    console.warn("[standup] no participants loaded, skipping");
+  if (rawParticipants.length === 0) {
+    console.warn("[standup] no participants found via filter, skipping");
     return;
   }
+
+  // Parse and sort: Eleanor first, then by department display_order, then by
+  // tier (exec before manager). Stable secondary sort by name for determinism.
+  const tierOrder: Record<string, number> = { exec: 0, director: 1, manager: 2, associate: 3, intern: 4, bot: 5 };
+
+  const parsed: Agent[] = [];
+  for (const raw of rawParticipants) {
+    const result = AgentSchema.safeParse(raw);
+    if (!result.success) {
+      console.warn(`[standup] schema validation failed for ${(raw as { name?: string }).name ?? "unknown"}`);
+      continue;
+    }
+    parsed.push(result.data);
+  }
+
+  // We need department display_order. The join may have given it to us; if
+  // not, query it once and build a lookup.
+  const deptOrder = new Map<string, number>();
+  for (const raw of rawParticipants) {
+    const dept = (raw as { departments?: { display_order?: number } }).departments;
+    const slug = (raw as { department?: string }).department;
+    if (dept?.display_order !== undefined && slug) {
+      deptOrder.set(slug, dept.display_order);
+    }
+  }
+  if (deptOrder.size === 0) {
+    const { data: deptRows } = await db
+      .from("departments")
+      .select("slug, display_order")
+      .eq("tenant_id", config.tenantId);
+    for (const d of deptRows ?? []) {
+      deptOrder.set(d.slug as string, d.display_order as number);
+    }
+  }
+
+  parsed.sort((a, b) => {
+    // Chief of Staff (Eleanor) always opens
+    if (a.role === "Chief of Staff") return -1;
+    if (b.role === "Chief of Staff") return 1;
+    const ao = deptOrder.get(a.department ?? "") ?? 999;
+    const bo = deptOrder.get(b.department ?? "") ?? 999;
+    if (ao !== bo) return ao - bo;
+    const at = tierOrder[a.tier] ?? 999;
+    const bt = tierOrder[b.tier] ?? 999;
+    if (at !== bt) return at - bt;
+    return a.name.localeCompare(b.name);
+  });
+
+  const participants: Agent[] = parsed;
+  console.log(`[standup] ${participants.length} participants in order: ${participants.map((p) => p.name).join(" → ")}`);
 
   // Pull recent forum context once - same context for all participants
   const { data: recentPostsRaw } = await db

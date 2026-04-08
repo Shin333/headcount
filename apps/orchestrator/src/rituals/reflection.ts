@@ -31,6 +31,8 @@ export async function maybeRunReflections(now: Date): Promise<void> {
     .select("*")
     .eq("tenant_id", config.tenantId)
     .eq("status", "active")
+    .eq("is_human", false)
+    .eq("always_on", true)
     .eq("addendum_loop_active", true);
 
   if (error) {
@@ -70,6 +72,7 @@ export async function forceReflection(
   const parsed = AgentSchema.safeParse(raw);
   if (!parsed.success) return "not_found";
   const agent = parsed.data;
+  if (agent.is_human) return "not_active"; // safety: humans never reflect
   if (!agent.addendum_loop_active) return "not_active";
 
   return await reflectOne(agent, new Date(), true);

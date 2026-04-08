@@ -32,6 +32,9 @@ interface Agent {
   status: string;
   model_tier: string;
   addendum_loop_active: boolean;
+  is_human?: boolean;
+  in_standup?: boolean;
+  always_on?: boolean;
 }
 
 interface AddendumProposal {
@@ -53,7 +56,25 @@ const TIER_LABEL: Record<string, string> = {
   exec: "EXEC", director: "DIR", manager: "MGR", associate: "ASSOC", intern: "INTERN", bot: "BOT",
 };
 
-const DEPT_ORDER = ["Executive", "Strategy", "Marketing", "Sales", "Engineering", "Quality", "Watercooler"];
+// Day 7: 12 departments, slug-keyed (matches agents.department after migration)
+const DEPT_ORDER = [
+  "executive", "engineering", "sales", "marketing", "operations",
+  "finance", "legal", "people", "strategy", "design", "product", "culture",
+];
+const DEPT_DISPLAY: Record<string, string> = {
+  executive: "Executive",
+  engineering: "Engineering",
+  sales: "Sales",
+  marketing: "Marketing",
+  operations: "Operations",
+  finance: "Finance",
+  legal: "Legal",
+  people: "People",
+  strategy: "Strategy & Innovation",
+  design: "Design",
+  product: "Product",
+  culture: "Culture",
+};
 
 type TabKey = "brief" | "reports" | "inbox" | "forum" | "watercooler" | "dms" | "addendum";
 
@@ -67,8 +88,10 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   // Day 5.3: Tavily quota counter
   const [quota, setQuota] = useState<{ live_today: number; cache_hits_today: number; remaining: number; free_tier_daily: number } | null>(null);
-  // Day 6: scheduled reports
+  // Day 7: scheduled reports
   const [reports, setReports] = useState<Array<{ id: string; ritual_name: string; agent_id: string; title: string; body: string; company_date: string; created_at: string }>>([]);
+  // Day 7: which department groups have specialists expanded
+  const [expandedDepts, setExpandedDepts] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let mounted = true;
@@ -76,7 +99,8 @@ export default function Home() {
     async function load() {
       const { data: agentsData } = await supabase
         .from("agents")
-        .select("id, name, role, department, tier, manager_id, reports_to_ceo, status, model_tier, addendum_loop_active");
+        .select("id, name, role, department, tier, manager_id, reports_to_ceo, status, model_tier, addendum_loop_active, is_human, in_standup, always_on")
+        .eq("is_human", false);
 
       if (mounted && agentsData) {
         const map = new Map<string, Agent>();
@@ -356,15 +380,32 @@ export default function Home() {
           <div className="space-y-4">
             {sortedDepts.map((dept) => {
               const list = agentsByDept.get(dept) ?? [];
+              const activeMembers = list.filter((a) => a.always_on === true);
+              const dormantMembers = list.filter((a) => a.always_on !== true);
+              const isExpanded = expandedDepts.has(dept);
+              const toggleExpanded = () => {
+                setExpandedDepts((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(dept)) next.delete(dept);
+                  else next.add(dept);
+                  return next;
+                });
+              };
               return (
                 <div key={dept} className="rounded-lg border border-ink-200 bg-white p-3">
-                  <h3 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-ink-400">{dept}</h3>
+                  <h3 className="mb-2 flex items-baseline justify-between font-mono text-[10px] uppercase tracking-wider text-ink-400">
+                    <span>{DEPT_DISPLAY[dept] ?? dept}</span>
+                    <span className="font-mono text-[9px] text-ink-400">{list.length}</span>
+                  </h3>
                   <ul className="space-y-1.5">
-                    {list.map((a) => (
+                    {activeMembers.map((a) => (
                       <li key={a.id} className="text-xs">
                         <div className="flex items-center justify-between gap-2">
                           <span className="truncate font-medium text-ink-900">{a.name}</span>
                           <div className="flex shrink-0 items-center gap-1">
+                            {a.in_standup && (
+                              <span className="font-mono text-[8px] text-blue-600" title="in standup">◆</span>
+                            )}
                             {a.addendum_loop_active && (
                               <span className="font-mono text-[8px] text-emerald-600" title="addendum loop active">●</span>
                             )}
@@ -375,6 +416,30 @@ export default function Home() {
                       </li>
                     ))}
                   </ul>
+                  {dormantMembers.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={toggleExpanded}
+                        className="mt-2 w-full rounded border border-dashed border-ink-200 px-2 py-1 text-left font-mono text-[10px] text-ink-400 transition hover:border-ink-400 hover:text-ink-600"
+                      >
+                        {isExpanded ? "▼" : "▶"} {dormantMembers.length} dormant specialist{dormantMembers.length === 1 ? "" : "s"}
+                      </button>
+                      {isExpanded && (
+                        <ul className="mt-2 space-y-1.5 border-l border-ink-100 pl-2">
+                          {dormantMembers.map((a) => (
+                            <li key={a.id} className="text-xs opacity-70">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate text-ink-800">{a.name}</span>
+                                <span className="font-mono text-[9px] text-ink-400">{TIER_LABEL[a.tier] ?? a.tier}</span>
+                              </div>
+                              <div className="truncate text-[10px] text-ink-400">{a.role}</div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
                 </div>
               );
             })}
