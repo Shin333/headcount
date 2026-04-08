@@ -74,7 +74,7 @@ export const ForumPostSchema = z.object({
   author_id: z.string().uuid(),
   parent_id: z.string().uuid().nullable(),
   body: z.string(),
-  metadata: z.record(z.unknown()),
+  metadata: z.record(z.string(), z.unknown()),
   created_at: z.string(),
 });
 export type ForumPost = z.infer<typeof ForumPostSchema>;
@@ -134,3 +134,32 @@ export const COST_PER_M_TOKENS = {
   haiku: { input_fresh: 1.00, input_cached: 0.10, output: 5.00 },
   opus: { input_fresh: 5.00, input_cached: 0.50, output: 25.00 },
 } as const;
+
+// ============================================================================
+// REPORTS (Day 6: scheduled work output)
+// ============================================================================
+export const ReportSchema = z.object({
+  id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  ritual_name: z.string(),
+  agent_id: z.string().uuid(),
+  title: z.string(),
+  body: z.string(),
+  company_date: z.string(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  created_at: z.string(),
+});
+export type Report = z.infer<typeof ReportSchema>;
+
+export const ReportRunSchema = z.object({
+  id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  ritual_name: z.string(),
+  last_run_at: z.string().nullable(),
+  last_run_company_date: z.string().nullable(),
+  next_run_at: z.string(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ReportRun = z.infer<typeof ReportRunSchema>;

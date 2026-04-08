@@ -7,6 +7,7 @@ import { maybeRunStandup } from "../rituals/standup.js";
 import { maybeRunCeoBrief } from "../rituals/ceo-brief.js";
 import { maybeRunDmResponder } from "../rituals/dm-responder.js";
 import { maybeRunDailyReset } from "../rituals/daily-reset.js";
+import { maybeRunReportScheduler } from "../rituals/report-runner.js";
 import { db } from "../db.js";
 
 let running = false;
@@ -51,6 +52,9 @@ async function onTick(clock: WorldClock): Promise<void> {
 
   // ---- Day 4.5: always-on DM responder (runs every tick regardless of company time) ----
   await maybeRunDmResponder(clock);
+
+  // ---- Day 6: always-on report scheduler (fires due report rituals, 1 per tick max) ----
+  await maybeRunReportScheduler(clock);
 
   const hour = clock.company_time.getUTCHours();
   const minute = clock.company_time.getUTCMinutes();
