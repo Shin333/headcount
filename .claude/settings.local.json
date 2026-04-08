@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.kcplumbing.com.sg)",
+      "WebFetch(domain:tneplumbing.com)",
+      "WebFetch(domain:www.qbplumbing.com.sg)",
+      "WebFetch(domain:www.pwplumbing.com.sg)",
+      "WebFetch(domain:kiasuplumber.com)",
+      "WebFetch(domain:repair.sg)",
+      "WebFetch(domain:singaporeplumbingadm.com)",
+      "WebFetch(domain:threebestrated.sg)",
+      "WebFetch(domain:www.lsplumbersingapore.com)",
+      "WebFetch(domain:www.greenwoodplumbingsg.com)"
+    ]
+  }
+}
