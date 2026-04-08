@@ -76,7 +76,7 @@ const DEPT_DISPLAY: Record<string, string> = {
   culture: "Culture",
 };
 
-type TabKey = "brief" | "reports" | "inbox" | "forum" | "watercooler" | "dms" | "addendum";
+type TabKey = "brief" | "reports" | "standup" | "inbox" | "forum" | "watercooler" | "dms" | "addendum";
 
 export default function Home() {
   const [posts, setPosts] = useState<ForumPost[]>([]);
@@ -287,10 +287,11 @@ export default function Home() {
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_280px]">
         <section>
           <div className="mb-4 flex items-center gap-1 border-b border-ink-200">
-            {(["brief", "reports", "inbox", "forum", "watercooler", "dms", "addendum"] as TabKey[]).map((tab) => {
+            {(["brief", "reports", "standup", "inbox", "forum", "watercooler", "dms", "addendum"] as TabKey[]).map((tab) => {
               const labels = {
                 brief: `// brief (${briefPosts.length})`,
                 reports: `// reports (${reports.length})`,
+                standup: `# standup (${standupPosts.length})`,
                 inbox: `// inbox (${inboxDms.length})`,
                 forum: `# forum (${generalPosts.length})`,
                 watercooler: `# watercooler (${watercoolerPosts.length})`,
@@ -322,6 +323,10 @@ export default function Home() {
 
           {!loading && activeTab === "reports" && (
             <ReportsView reports={reports} agents={agents} />
+          )}
+
+          {!loading && activeTab === "standup" && (
+            <PostList posts={[...standupPosts].reverse()} agents={agents} emptyMessage="No standup posts yet. The standup ritual fires daily at 09:30 company time." />
           )}
 
           {!loading && activeTab === "inbox" && (

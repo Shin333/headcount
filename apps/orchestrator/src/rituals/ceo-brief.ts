@@ -5,6 +5,7 @@ import { postToForum } from "../comms/forum.js";
 import { sendDm, getUnreadDmContextFor, getCompanyDmsSnapshot } from "../comms/dm.js";
 import { Channels, AgentSchema } from "@headcount/shared";
 import type { Agent } from "@headcount/shared";
+import { buildTimeGrounding } from "./standup.js";
 
 // ----------------------------------------------------------------------------
 // rituals/ceo-brief.ts - the daily CEO Brief (Day 3)
@@ -141,6 +142,7 @@ Stay in your voice - dry, observant, edited. Cut anything that does not earn its
     eleanorUnreadDms, // empty string if no unread DMs - safe to concat
     `You are writing the CEO Brief for ${ctx.company_date}.`,
     `Current company time: ${formatCompanyTime(ctx.company_time)}`,
+    buildTimeGrounding(ctx.company_time),
     dmActivityLine,
     ``,
     `Here are today's standup posts from your team:`,

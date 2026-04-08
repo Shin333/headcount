@@ -218,7 +218,12 @@ export async function runBulkSpecialistSeed(): Promise<void> {
 }
 
 // CLI invocation
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Cross-platform check: pathToFileURL gives the same shape as import.meta.url
+// on both Windows and POSIX. The previous `file://${process.argv[1]}` template
+// silently failed on Windows because Windows paths use backslashes and drive
+// letters that don't match the URL format.
+import { pathToFileURL as __pathToFileURL_bulk } from "node:url";
+if (process.argv[1] && import.meta.url === __pathToFileURL_bulk(process.argv[1]).href) {
   runBulkSpecialistSeed()
     .then(() => process.exit(0))
     .catch((err) => {

@@ -178,7 +178,7 @@ export async function maybeRunStandup(ctx: StandupContext): Promise<void> {
       unreadDmContext, // empty string if no unread DMs - safe to concat
       `Channel you are posting to: #standup`,
       `Current company time: ${formatCompanyTime(ctx.company_time)}`,
-      `Today is ${ctx.company_date}.`,
+      buildTimeGrounding(ctx.company_time),
       ``,
       `This is the daily standup. Your team and the rest of the directors will read this. The CEO will read a synthesis of all standup posts from the Chief of Staff later this morning.`,
       ``,
@@ -274,4 +274,44 @@ function formatCompanyTime(d: Date): string {
   const hh = String(d.getUTCHours()).padStart(2, "0");
   const min = String(d.getUTCMinutes()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+}
+
+// Day 8: time grounding. Inject grounded calendar facts so agents stop
+// confabulating phrases like "Day 3 of Q1" on actual Day 27. The forum
+// context window is enough to give agents social memory, but it's not
+// enough to give them an accurate calendar — they need explicit facts.
+//
+// Returns a multi-line string ready to be inserted into a prompt context block.
+export function buildTimeGrounding(d: Date): string {
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth() + 1; // 1-12
+  const day = d.getUTCDate();
+
+  // Q1 = Jan-Mar, Q2 = Apr-Jun, Q3 = Jul-Sep, Q4 = Oct-Dec
+  const quarter = Math.floor((month - 1) / 3) + 1;
+  const quarterStartMonth = (quarter - 1) * 3 + 1; // 1, 4, 7, 10
+  const quarterStart = new Date(Date.UTC(year, quarterStartMonth - 1, 1));
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const dayOfQuarter = Math.floor((d.getTime() - quarterStart.getTime()) / msPerDay) + 1;
+
+  // Days since Jan 1 of this year (1-indexed)
+  const yearStart = new Date(Date.UTC(year, 0, 1));
+  const dayOfYear = Math.floor((d.getTime() - yearStart.getTime()) / msPerDay) + 1;
+
+  // ISO week number
+  const tempDate = new Date(Date.UTC(year, d.getUTCMonth(), d.getUTCDate()));
+  tempDate.setUTCDate(tempDate.getUTCDate() + 4 - (tempDate.getUTCDay() || 7));
+  const yearStartIso = new Date(Date.UTC(tempDate.getUTCFullYear(), 0, 1));
+  const weekNumber = Math.ceil(((tempDate.getTime() - yearStartIso.getTime()) / msPerDay + 1) / 7);
+
+  // Day of week
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const dayOfWeek = dayNames[d.getUTCDay()] ?? "Unknown";
+
+  return [
+    `Calendar facts (do not contradict these):`,
+    `- Today is ${dayOfWeek}, ${formatCompanyTime(d).slice(0, 10)}.`,
+    `- This is Day ${dayOfQuarter} of Q${quarter} ${year}.`,
+    `- Week ${weekNumber} of ${year}. Day ${dayOfYear} of the year.`,
+  ].join("\n");
 }
