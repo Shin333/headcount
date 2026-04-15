@@ -11,6 +11,7 @@ import { commitmentCreateTool } from "./commitment-create.js";
 import { imagenGenerateTool } from "./imagen.js";
 import { readArtifactTool } from "./read-artifact.js";
 import { projectCompleteTool } from "./project-complete.js";
+import { codeExecutionTool } from "./code-execution.js";
 
 // ----------------------------------------------------------------------------
 // tools/registry.ts - the tool catalog
@@ -40,6 +41,7 @@ const TOOL_REGISTRY: Record<string, Tool> = {
   imagen_generate: imagenGenerateTool,
   read_artifact: readArtifactTool,
   project_complete: projectCompleteTool,
+  code_execution: codeExecutionTool,
 };
 
 /**
@@ -69,11 +71,30 @@ export function getToolByName(name: string): Tool | null {
 }
 
 /**
- * Convert a list of Tool objects to the JSON schema format Anthropic's API
- * expects in the `tools` parameter.
+ * Convert a list of Tool objects to the format Anthropic's API expects in the
+ * `tools` parameter. Regular tools emit their JSON schema definition.
+ * Server-side tools (Day 23a: code_execution) emit their raw API shape, which
+ * is structurally different (e.g. { type, name } with no input_schema).
+ *
+ * The return type is widened to `unknown[]` because the SDK's `Tool` type
+ * doesn't model server-side tools yet in 0.32.x.
  */
-export function toolsToApiFormat(tools: Tool[]): ToolDefinition[] {
-  return tools.map((t) => t.definition);
+export function toolsToApiFormat(tools: Tool[]): unknown[] {
+  return tools.map((t) => (t.server_side && t.serverApiShape ? t.serverApiShape : t.definition));
+}
+
+/**
+ * Day 23a: collect beta headers required by any tool in the set. Returned as
+ * a comma-joined string suitable for the `anthropic-beta` HTTP header.
+ * Returns null if no tool needs a beta header.
+ */
+export function collectBetaHeaders(tools: Tool[]): string | null {
+  const headers = new Set<string>();
+  for (const t of tools) {
+    if (t.beta_header) headers.add(t.beta_header);
+  }
+  if (headers.size === 0) return null;
+  return Array.from(headers).join(",");
 }
 
 // ----------------------------------------------------------------------------

@@ -94,11 +94,27 @@ export type ToolExecutor = (
  *   real_action       - marker for real-world API calls (calendar, github,
  *                       etc.). Currently informational; the executor itself
  *                       handles writing to real_action_audit.
+ *
+ * Day 23a flags (server-side tools):
+ *   server_side       - when true, Anthropic's API runs the tool and inlines
+ *                       the result into the assistant response. Our runner
+ *                       does NOT dispatch an executor. Used for code_execution.
+ *   serverApiShape    - the raw shape Anthropic expects for server-side tools
+ *                       (e.g. { type: "code_execution_20250522", name: "code_execution" }),
+ *                       which differs from regular ToolDefinition. When present,
+ *                       toolsToApiFormat emits this verbatim.
+ *   beta_header       - HTTP beta header required to enable this server-side
+ *                       tool (e.g. "code-execution-2025-05-22"). The runner
+ *                       collects all beta_header values across the tool set
+ *                       and joins them comma-separated in the request.
  */
 export interface Tool {
   definition: ToolDefinition;
-  executor: ToolExecutor;
+  executor?: ToolExecutor;
   extended_thinking?: boolean;
   max_output_tokens?: number;
   real_action?: boolean;
+  server_side?: boolean;
+  serverApiShape?: Record<string, unknown>;
+  beta_header?: string;
 }

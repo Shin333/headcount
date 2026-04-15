@@ -14,6 +14,7 @@ import {
   toolsToApiFormat,
   anyToolHasExtendedThinking,
   maxOutputTokensOverride,
+  collectBetaHeaders,
 } from "../tools/registry.js";
 
 export interface AgentTurnResult {
@@ -428,6 +429,10 @@ async function runAgentTurnWithTools(args: {
   const useExtendedThinking = anyToolHasExtendedThinking(tools);
   const tokenOverride = maxOutputTokensOverride(tools);
   const effectiveMaxTokens = tokenOverride ?? maxTokens;
+  // Day 23a: collect any HTTP beta headers required by server-side tools in
+  // the set (currently only code_execution -> "code-execution-2025-05-22").
+  const betaHeader = collectBetaHeaders(tools);
+  const requestOpts = betaHeader ? { headers: { "anthropic-beta": betaHeader } } : undefined;
 
   // Build the thinking config object once.
   const thinkingConfig: { thinking?: { type: "adaptive" } } = useExtendedThinking
@@ -500,21 +505,24 @@ async function runAgentTurnWithTools(args: {
     await chargeBudget(agent, effectiveMaxTokens);
     totalReservedThisTurn += effectiveMaxTokens;
 
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: effectiveMaxTokens,
-      system: [
-        {
-          type: "text",
-          text: systemPromptText,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      tools: apiTools,
-      messages: messages as Anthropic.MessageParam[],
-      // Day 9b: spread the thinking config (empty object when disabled)
-      ...(thinkingConfig as Record<string, unknown>),
-    });
+    const response = await anthropic.messages.create(
+      {
+        model,
+        max_tokens: effectiveMaxTokens,
+        system: [
+          {
+            type: "text",
+            text: systemPromptText,
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+        tools: apiTools as unknown as Anthropic.Tool[],
+        messages: messages as Anthropic.MessageParam[],
+        // Day 9b: spread the thinking config (empty object when disabled)
+        ...(thinkingConfig as Record<string, unknown>),
+      },
+      requestOpts
+    );
 
     // Accumulate token + cost for this round
     const inputTokens = response.usage.input_tokens ?? 0;
@@ -550,6 +558,34 @@ async function runAgentTurnWithTools(args: {
         input: (block.input as Record<string, unknown>) ?? {},
       }));
 
+    // Day 23a: extract server-side tool runs (code_execution) for audit so the
+    // dashboard can see scripts + results without re-hydrating agent_actions
+    // from raw response content. Server-side tools use `server_tool_use` and
+    // `code_execution_tool_result` block types, distinct from regular tool_use.
+    type ServerToolUseBlock = { type: "server_tool_use"; id: string; name: string; input: Record<string, unknown> };
+    type CodeExecResultBlock = {
+      type: "code_execution_tool_result";
+      tool_use_id: string;
+      content: { type?: string; stdout?: string; stderr?: string; return_code?: number; content?: unknown[] };
+    };
+    const serverToolUses = (response.content as unknown[]).filter(
+      (b): b is ServerToolUseBlock => (b as { type?: string }).type === "server_tool_use"
+    );
+    const codeExecResults = (response.content as unknown[]).filter(
+      (b): b is CodeExecResultBlock => (b as { type?: string }).type === "code_execution_tool_result"
+    );
+    const serverToolAudit = serverToolUses.length > 0 || codeExecResults.length > 0
+      ? {
+          server_tool_uses: serverToolUses.map((b) => ({ name: b.name, input: b.input })),
+          code_execution_results: codeExecResults.map((b) => ({
+            tool_use_id: b.tool_use_id,
+            stdout: (b.content?.stdout ?? "").slice(0, 4000),
+            stderr: (b.content?.stderr ?? "").slice(0, 2000),
+            return_code: b.content?.return_code,
+          })),
+        }
+      : null;
+
     await db.from("agent_actions").insert({
       tenant_id: config.tenantId,
       agent_id: agent.id,
@@ -572,6 +608,7 @@ async function runAgentTurnWithTools(args: {
         iteration_index: iteration,
         tool_use: toolUseBlocks.length > 0,
         stop_reason: response.stop_reason,
+        ...(serverToolAudit ? { code_execution: serverToolAudit } : {}),
       },
     });
 
@@ -627,6 +664,16 @@ async function runAgentTurnWithTools(args: {
         result = {
           toolName: toolUse.name,
           content: `Error: tool '${toolUse.name}' is not registered.`,
+          isError: true,
+        };
+      } else if (!tool.executor) {
+        // Day 23a: server-side tools (code_execution) have no executor —
+        // Anthropic runs them and inlines the result. The model should not
+        // be emitting standard tool_use blocks for them; if we see one, it
+        // means a misregistered tool, so surface it.
+        result = {
+          toolName: toolUse.name,
+          content: `Error: '${toolUse.name}' is a server-side tool with no executor — this should never be reached. Misregistration suspected.`,
           isError: true,
         };
       } else {

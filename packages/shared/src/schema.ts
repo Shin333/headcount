@@ -144,6 +144,7 @@ export const KNOWN_TOOL_NAMES = [
   "imagen_generate",
   "read_artifact",
   "project_complete",
+  "code_execution",
 ] as const;
 export type KnownToolName = (typeof KNOWN_TOOL_NAMES)[number];
 
