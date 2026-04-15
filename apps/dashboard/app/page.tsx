@@ -32,8 +32,9 @@ import { WorkbenchView } from "@/components/views/WorkbenchView";
 import { MessagesView } from "@/components/views/MessagesView";
 import { ChannelView } from "@/components/views/ChannelView";
 import { ProjectsView } from "@/components/views/ProjectsView";
+import { HealthView } from "@/components/views/HealthView";
 
-type ViewKey = "today" | "company" | "projects" | "workbench" | "messages";
+type ViewKey = "today" | "company" | "projects" | "workbench" | "messages" | "health";
 type MessagesSubView = "dms" | "channels";
 
 interface TavilyQuota {
@@ -278,6 +279,7 @@ export default function Home() {
                 { key: "projects", label: "PROJECTS", count: 0, badge: 0 },
                 { key: "workbench", label: "WORKBENCH", count: workbenchCount, badge: 0 },
                 { key: "messages", label: "MESSAGES", count: messagesCount, badge: unreadInboxCount },
+                { key: "health", label: "HEALTH", count: 0, badge: 0 },
               ] as const
             ).map((view) => {
               const isActive = activeView === view.key;
@@ -330,6 +332,8 @@ export default function Home() {
           {!loading && activeView === "projects" && <ProjectsView />}
 
           {!loading && activeView === "workbench" && <WorkbenchView />}
+
+          {!loading && activeView === "health" && <HealthView />}
 
           {!loading && activeView === "messages" && (
             <div>
