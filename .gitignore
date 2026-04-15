@@ -10,3 +10,12 @@ dist
 .vscode
 .idea
 coverage
+
+# Day 9b: artifact workspace (contents private to each developer's machine)
+workspace/*
+!workspace/.gitkeep
+
+# Day 22c: local-only archive + build artifacts
+tmp/
+*.tsbuildinfo
+files.zip

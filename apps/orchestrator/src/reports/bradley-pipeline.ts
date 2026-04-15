@@ -22,18 +22,13 @@ export const bradleyPipelineRitual: ReportRitual = {
   agentName: "Bradley Koh",
 
   computeNextRunAt({ now, lastRunCompanyDate }) {
-    // Schedule the next 14:00 company time on a weekday (Mon-Fri).
-    // We use the wall clock as a proxy because the orchestrator's tick
-    // produces wall-time intervals; the runner schedules in wall-time terms.
-    // Aim for "roughly the next ~5 wall minutes" since the cadence is meant
-    // to map to company-day afternoons at 60x speed (1 company day = 24 wall min).
-    //
-    // Strategy: schedule the next run for 24 wall minutes from now, which
-    // approximates "tomorrow at 14:00 company time" at default 60x speed.
-    // The lastRunCompanyDate guard prevents same-day double-firing.
-
+    // Day 22: 24 wall hours between runs (was 24 wall minutes).
+    // At 60x speed, 24 wall minutes = 24 company hours which is technically
+    // once per company day — but in practice it means a pipeline review
+    // every 24 real minutes, which is way too frequent and produces
+    // confabulated deal numbers. One per real day is plenty.
     void lastRunCompanyDate;
-    const next = new Date(now.getTime() + 24 * 60 * 1000);
+    const next = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     return next;
   },
 

@@ -3,21 +3,21 @@ import { runAgentTurn } from "../agents/runner.js";
 import { getToolsForAgent } from "../tools/registry.js";
 
 // ----------------------------------------------------------------------------
-// reports/weiming-roadmap.ts - Day 6
+// reports/weiming-roadmap.ts - Day 6 + Day 20 confabulation fix
 // ----------------------------------------------------------------------------
-// Tsai Wei-Ming's weekly engineering roadmap check. Fires Monday mornings at
-// 10:30 company time, after standup and CEO brief.
+// Day 6 original: fired every 30 wall minutes on Opus with no grounding.
+// Wei-Ming would fabricate CVEs, migrations, fork statuses, and staffing
+// requests that don't exist. The team reacted to these as real.
 //
-// Wei-Ming has web_search access (Day 5.2). His roadmap can include actual
-// technical research - "did the new Anthropic API change anything we depend
-// on?" or "what's the status of the n8n self-hosted licensing?"
-//
-// Cadence at default 60x speed: ~7 wall days between firings (since one
-// company day = 24 wall minutes, one company week = ~168 wall minutes).
-// In practice we cap the wait at ~30 wall minutes for testing - that's
-// "every 30 wall minutes" rather than "every Monday." Better for the
-// build day's testing tempo. The character framing still says "weekly"
-// in the prompt so the report content reflects a weekly cadence.
+// Day 20 fix:
+//   1. Frequency: 30 wall minutes → 24 wall hours (once per real day)
+//   2. Model: runs on whatever Wei-Ming's model_tier is (Opus), but
+//      max_tokens capped at 800 to reduce cost
+//   3. Grounding: prompt explicitly says "only report on work you have
+//      DIRECT EVIDENCE for" and "if you have nothing real to report,
+//      say so and stop"
+//   4. Anti-confabulation: explicit instruction to never invent CVEs,
+//      migrations, staffing asks, or other fictional status items
 // ----------------------------------------------------------------------------
 
 const RITUAL_NAME = "weiming_eng_roadmap";
@@ -28,11 +28,11 @@ export const weimingRoadmapRitual: ReportRitual = {
   agentName: "Tsai Wei-Ming",
 
   computeNextRunAt({ now }) {
-    // Wall-time aligned: ~30 wall minutes between runs.
-    // At 60x speed that's ~30 company hours ≈ 1.25 company days, which is
-    // shorter than a real "weekly" cadence but produces enough test data
-    // to verify the ritual on a build day. Phase B+ can dial this back.
-    const next = new Date(now.getTime() + 30 * 60 * 1000);
+    // Day 20: 24 wall hours between runs (was 30 wall minutes).
+    // At 60x speed, 30 wall minutes = 30 company hours which produced
+    // multiple fictional roadmaps per day. 24 wall hours means one
+    // roadmap per real day — and only if there's real work to report.
+    const next = new Date(now.getTime() + 24 * 60 * 60 * 1000);
     return next;
   },
 
@@ -50,46 +50,68 @@ export const weimingRoadmapRitual: ReportRitual = {
             )
             .join("\n\n---\n\n") +
           `\n\n# End of past roadmaps\n\n` +
-          `Today's roadmap should reference what you said before. If you said something would ship, did it ship? If you flagged a risk, did it materialize? Engineers track their own predictions.`
-        : `This is your first weekly roadmap check. Establish what the engineering team is working on, what's planned, and what you're worried about.`;
+          `Today's roadmap should reference what you said before. If you said something would ship, did it ship? If you flagged a risk, did it materialize?`
+        : `This is your first engineering roadmap check. Only report on work you have direct evidence for.`;
 
     const contextBlock = [
-      `You are writing your weekly engineering roadmap check.`,
-      `Today is Monday morning, ${companyDate}, 10:30 company time.`,
-      `You may use the web_search tool to verify current technical claims, check API documentation, or look up library or framework changes that affect the roadmap. Use search the way an engineer reads a changelog - prefer official docs over blogs, cite version numbers and dates.`,
+      `You are writing your engineering roadmap check.`,
+      `Today is ${companyDate}.`,
+      ``,
+      `CRITICAL ANTI-CONFABULATION RULE:`,
+      `You MUST only report on engineering work you have DIRECT EVIDENCE for.`,
+      `Direct evidence means: an artifact you created, a tool call you made,`,
+      `a channel message you posted with real technical content, or a DM`,
+      `exchange about actual code or architecture.`,
+      ``,
+      `DO NOT invent or fabricate ANY of the following:`,
+      `- CVEs, security vulnerabilities, or security forks`,
+      `- Framework migrations (Next.js version upgrades, etc.)`,
+      `- Staffing requests or hiring asks`,
+      `- Phase numbers (Phase 1, Phase 2, etc.) unless explicitly defined by the CEO`,
+      `- Sprint numbers, week counts, or iteration tracking`,
+      `- Any engineering work that hasn't actually been discussed or committed to`,
+      ``,
+      `If you have NO real engineering work to report, respond with exactly:`,
+      `"No engineering updates this period. Waiting on project assignments."`,
+      `That is a valid and acceptable response. An empty roadmap is better than a fictional one.`,
       ``,
       recentReportsContext,
     ].join("\n");
 
-    const trigger = `Write your weekly engineering roadmap check for ${companyDate} as a markdown document.
+    const trigger = `Write your engineering roadmap check for ${companyDate} as a markdown document.
 
-Structure:
+ONLY include items you have DIRECT EVIDENCE for. If you created an artifact, reference it.
+If you had a real technical discussion in the channel, reference it.
+If you have nothing real to report, say "No engineering updates this period."
 
-# Engineering Roadmap - Week of ${companyDate}
+Structure (only include sections that have real content):
 
-## Shipped last week
-(2-4 bullets. Concrete things, no vague "improvements made". If last week was a wash, say so.)
+# Engineering Roadmap - ${companyDate}
 
-## In progress this week
-(2-4 bullets. What the team is actually building right now, who's on what.)
+## Completed
+(Only items you actually delivered — artifacts created, specs written, code committed. If nothing was completed, omit this section entirely.)
 
-## Blockers and risks
-(0-3 bullets. Real engineering risks, infra concerns, dependency issues. If you used web_search to verify something, cite the URL and the date you pulled it.)
+## In progress
+(Only work actively being done with evidence — open channel discussions, pending reviews, active builds. If nothing is in progress, omit this section.)
 
-## What I need from the CEO
-(0-2 specific asks. Hiring, infra budget, scope decisions. "Nothing this week" is a valid answer.)
+## Blockers
+(Only real, specific blockers you've encountered. Not hypothetical risks. If no blockers, omit this section.)
 
-Stay in your voice: methodical, low-tolerance for vibes, specific about versions and dates. Use web_search if you genuinely need to verify something current. Do NOT search for things you can reasonably know.
+## Needs from the CEO
+(Only if you genuinely need a decision or resource. "Nothing needed" is fine — just omit the section.)
 
-Respond ONLY with the markdown document. No preamble.`;
+Respond ONLY with the markdown document. No preamble. If you have nothing real to report, respond with "No engineering updates this period. Waiting on project assignments."`;
 
+    // Day 20: cap max_tokens at 800 to reduce cost. A grounded roadmap
+    // with real items doesn't need 1500 tokens. If Wei-Ming is hitting
+    // 800, he's probably padding with fiction.
     const tools = getToolsForAgent(agent.tool_access ?? []);
 
     const result = await runAgentTurn({
       agent,
       trigger,
       contextBlock,
-      maxTokens: 1500,
+      maxTokens: 800,
       tools: tools.length > 0 ? tools : undefined,
     });
 
@@ -98,8 +120,21 @@ Respond ONLY with the markdown document. No preamble.`;
       return null;
     }
 
+    // Day 20: if the response is essentially "nothing to report", don't
+    // save it as a report. This prevents empty roadmaps from cluttering
+    // the reports table and the dashboard.
+    const textLower = result.text.trim().toLowerCase();
+    if (
+      textLower.includes("no engineering updates") ||
+      textLower.includes("waiting on project assignments") ||
+      textLower.includes("nothing to report")
+    ) {
+      console.log(`[weiming-roadmap] nothing to report — skipping save`);
+      return null;
+    }
+
     return {
-      title: `Engineering Roadmap - Week of ${companyDate}`,
+      title: `Engineering Roadmap - ${companyDate}`,
       body: result.text.trim(),
       metadata: {
         cost_usd: result.costUsd,

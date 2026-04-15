@@ -11,7 +11,7 @@ import { createClient } from "@supabase/supabase-js";
 
 const CEO_SENTINEL_ID = "00000000-0000-0000-0000-00000000ce00";
 const TENANT_ID = "00000000-0000-0000-0000-000000000001";
-const MAX_BODY_LENGTH = 4000;
+const MAX_BODY_LENGTH = 20000;
 
 function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;

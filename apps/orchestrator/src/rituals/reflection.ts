@@ -83,6 +83,18 @@ async function reflectOne(
   now: Date,
   forced: boolean
 ): Promise<"ok" | "no_change" | "too_few_posts" | "budget_exceeded"> {
+  // =========================================================================
+  // Day 22: Pull ALL work context, not just forum posts.
+  // Before this change, agents only reflected on standup/watercooler posts,
+  // producing watercooler-heavy addendum proposals. Now we inject:
+  // - Forum posts (standup, watercooler, forum)
+  // - Project channel messages (meeting rooms)
+  // - Recent DMs sent by this agent
+  // - Artifacts they created
+  // - Commitments (pending, resolved, stalled)
+  // =========================================================================
+
+  // 1. Forum posts (original source)
   const { data: recentPosts } = await db
     .from("forum_posts")
     .select("channel, body, created_at")
@@ -91,25 +103,114 @@ async function reflectOne(
     .order("created_at", { ascending: false })
     .limit(10);
 
-  if (!recentPosts || recentPosts.length < MIN_POSTS_FOR_REFLECTION) {
+  // 2. Project channel messages by this agent (last 15)
+  const { data: channelMessages } = await db
+    .from("project_messages")
+    .select("body, project_id, created_at, message_type")
+    .eq("agent_id", agent.id)
+    .eq("message_type", "message")
+    .order("created_at", { ascending: false })
+    .limit(15);
+
+  // 3. Recent DMs sent by this agent (last 10)
+  const { data: sentDms } = await db
+    .from("dms")
+    .select("body, to_id, created_at")
+    .eq("from_id", agent.id)
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  // 4. Artifacts created by this agent (last 10)
+  const { data: artifacts } = await db
+    .from("artifacts")
+    .select("title, file_path, created_at")
+    .eq("tenant_id", config.tenantId)
+    .eq("agent_id", agent.id)
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  // 5. Recent commitments for this agent
+  const { data: commitments } = await db
+    .from("commitments")
+    .select("description, status, nudge_count, created_at")
+    .eq("agent_id", agent.id)
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  // Check if there's enough activity to reflect on
+  const totalActivity =
+    (recentPosts?.length ?? 0) +
+    (channelMessages?.length ?? 0) +
+    (sentDms?.length ?? 0);
+
+  if (totalActivity < MIN_POSTS_FOR_REFLECTION) {
     console.log(
-      `[reflection] ${agent.name} has only ${recentPosts?.length ?? 0} posts (need ${MIN_POSTS_FOR_REFLECTION}); will retry next check`
+      `[reflection] ${agent.name} has only ${totalActivity} activity items (need ${MIN_POSTS_FOR_REFLECTION}); will retry next check`
     );
     return "too_few_posts";
   }
 
-  const postsContext = recentPosts
-    .reverse()
-    .map((p) => `[#${p.channel}] ${p.body}`)
-    .join("\n\n");
+  // Build context sections
+  const sections: string[] = [];
 
+  if (recentPosts && recentPosts.length > 0) {
+    const postsContext = recentPosts
+      .reverse()
+      .map((p) => `[#${p.channel}] ${p.body.slice(0, 300)}`)
+      .join("\n\n");
+    sections.push(`=== YOUR FORUM POSTS ===\n${postsContext}`);
+  }
+
+  if (channelMessages && channelMessages.length > 0) {
+    const channelContext = channelMessages
+      .reverse()
+      .map((m) => `[project channel] ${m.body.slice(0, 300)}`)
+      .join("\n\n");
+    sections.push(`=== YOUR PROJECT CHANNEL MESSAGES ===\n${channelContext}`);
+  }
+
+  if (sentDms && sentDms.length > 0) {
+    // Load recipient names
+    const recipientIds = Array.from(new Set(sentDms.map((d) => d.to_id)));
+    const { data: recipients } = await db
+      .from("agents")
+      .select("id, name")
+      .in("id", recipientIds);
+    const nameMap = new Map<string, string>();
+    for (const r of recipients ?? []) nameMap.set(r.id, r.name);
+
+    const dmContext = sentDms
+      .reverse()
+      .map((d) => `[DM to ${nameMap.get(d.to_id) ?? "unknown"}] ${d.body.slice(0, 200)}`)
+      .join("\n\n");
+    sections.push(`=== YOUR RECENT DMs (sent) ===\n${dmContext}`);
+  }
+
+  if (artifacts && artifacts.length > 0) {
+    const artifactContext = artifacts
+      .map((a) => `- "${a.title}" → ${a.file_path}`)
+      .join("\n");
+    sections.push(`=== ARTIFACTS YOU CREATED ===\n${artifactContext}`);
+  }
+
+  if (commitments && commitments.length > 0) {
+    const commitmentContext = commitments
+      .map((c) => {
+        const nudgeNote = c.nudge_count > 0 ? ` (nudged ${c.nudge_count}x)` : "";
+        return `- [${c.status}] "${c.description}"${nudgeNote}`;
+      })
+      .join("\n");
+    sections.push(`=== YOUR COMMITMENTS ===\n${commitmentContext}`);
+  }
+
+  const allContext = sections.join("\n\n");
   const currentAddendum = agent.learned_addendum || "(none yet)";
 
   const trigger = `It is time for self-reflection.${forced ? " The CEO has manually triggered this reflection now." : ""}
 
-Here are your most recent posts:
+Here is your recent work activity — forum posts, project channel messages, DMs, artifacts you created, and your commitments:
 
-${postsContext}
+${allContext}
 
 Your current learned addendum (lessons you have built up over time, separate from your fixed character):
 
@@ -118,10 +219,11 @@ ${currentAddendum}
 Reflect honestly on patterns in your recent work. Look for:
 - Things you have been doing well that should become explicit guidance for yourself
 - Things you have been doing poorly that you should explicitly correct
+- Patterns in your project work: did you re-post the same content? Did you miss a decision that was already pinned? Did you ask a question that was already answered? Did you confabulate information you didn't have?
 - Specific principles that would have helped you in a recent moment
 
 Then either:
-(a) Propose ONE small addition or change to your learned addendum. Concrete, short (2-4 sentences), actionable. In the voice of guidance from yourself to yourself.
+(a) Propose ONE small addition or change to your learned addendum. Concrete, short (2-4 sentences), actionable. In the voice of guidance from yourself to yourself. Prefer project-work improvements over social/watercooler observations.
 (b) Decline if nothing is clearly worth changing yet.
 
 Respond in this exact format:
@@ -138,13 +240,14 @@ REASON:
   const contextBlock = [
     `This is a private self-reflection. Nobody else sees this directly.`,
     `Any proposal you make will be reviewed and approved by the CEO before it takes effect.`,
+    `Focus on your PROJECT WORK patterns — deliverables, channel behavior, coordination with colleagues — not just social posts.`,
   ].join("\n");
 
   const result = await runAgentTurn({
     agent,
     trigger,
     contextBlock,
-    maxTokens: 800,
+    maxTokens: 1000, // Day 22: bumped from 800 to handle richer reflection context
   });
 
   if (result.skipped === "budget_exceeded") {
