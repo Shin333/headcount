@@ -59,6 +59,8 @@ export const AgentSchema = z.object({
   last_reflection_at: z.string().nullable().default(null),
   // Day 5: per-agent tool access whitelist
   tool_access: z.array(z.string()).default([]),
+  // Day 24: per-agent MCP server whitelist (e.g. ['alai']). See mcp-registry.ts.
+  mcp_access: z.array(z.string()).default([]),
   // Day 7: org structure additions
   always_on: z.boolean().default(false),
   in_standup: z.boolean().default(false),
@@ -130,6 +132,17 @@ export type PromptEvolutionEntry = z.infer<typeof PromptEvolutionEntrySchema>;
 // tool-access drift panel) import this. If you add a new tool, update this
 // list AND register it in orchestrator's TOOL_REGISTRY.
 // ============================================================================
+// ============================================================================
+// MCP SERVERS (single source of truth for remote MCP server names)
+// ============================================================================
+// Parallel to KNOWN_TOOL_NAMES. Validated by the orchestrator at startup
+// (validateAgentMcpAccess) and surfaced by the Health view's drift panel.
+// ============================================================================
+export const KNOWN_MCP_SERVERS = [
+  "alai", // Alai Presentations — pitch/board/strategy decks
+] as const;
+export type KnownMcpServer = (typeof KNOWN_MCP_SERVERS)[number];
+
 export const KNOWN_TOOL_NAMES = [
   "web_search",
   "code_artifact_create",

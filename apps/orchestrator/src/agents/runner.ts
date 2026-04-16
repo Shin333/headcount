@@ -16,6 +16,7 @@ import {
   maxOutputTokensOverride,
   collectBetaHeaders,
 } from "../tools/registry.js";
+import { resolveMcpServers, MCP_BETA_HEADER, type McpServerConfig } from "../tools/mcp-registry.js";
 
 export interface AgentTurnResult {
   text: string;
@@ -431,8 +432,18 @@ async function runAgentTurnWithTools(args: {
   const effectiveMaxTokens = tokenOverride ?? maxTokens;
   // Day 23a: collect any HTTP beta headers required by server-side tools in
   // the set (currently only code_execution -> "code-execution-2025-05-22").
-  const betaHeader = collectBetaHeaders(tools);
+  // Day 24: attach remote MCP servers from the agent's mcp_access list. When
+  // any MCP server is present we also need the mcp-client beta header.
+  const mcpServers: McpServerConfig[] = resolveMcpServers((agent as { mcp_access?: string[] }).mcp_access ?? []);
+  const betaParts: string[] = [];
+  const toolBeta = collectBetaHeaders(tools);
+  if (toolBeta) betaParts.push(toolBeta);
+  if (mcpServers.length > 0) betaParts.push(MCP_BETA_HEADER);
+  const betaHeader = betaParts.length > 0 ? betaParts.join(",") : null;
   const requestOpts = betaHeader ? { headers: { "anthropic-beta": betaHeader } } : undefined;
+  if (mcpServers.length > 0) {
+    console.log(`[${agent.name}] attaching ${mcpServers.length} MCP server(s): ${mcpServers.map((s) => s.name).join(", ")}`);
+  }
 
   // Build the thinking config object once.
   const thinkingConfig: { thinking?: { type: "adaptive" } } = useExtendedThinking
@@ -520,7 +531,10 @@ async function runAgentTurnWithTools(args: {
         messages: messages as Anthropic.MessageParam[],
         // Day 9b: spread the thinking config (empty object when disabled)
         ...(thinkingConfig as Record<string, unknown>),
-      },
+        // Day 24: Anthropic MCP connector. SDK 0.32 doesn't type this;
+        // passing through verbatim via the request body is supported.
+        ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
+      } as unknown as Anthropic.MessageCreateParamsNonStreaming,
       requestOpts
     );
 
@@ -574,6 +588,15 @@ async function runAgentTurnWithTools(args: {
     const codeExecResults = (response.content as unknown[]).filter(
       (b): b is CodeExecResultBlock => (b as { type?: string }).type === "code_execution_tool_result"
     );
+    // Day 24: MCP connector emits mcp_tool_use + mcp_tool_result blocks.
+    type McpToolUseBlock = { type: "mcp_tool_use"; id: string; name: string; server_name?: string; input: Record<string, unknown> };
+    type McpToolResultBlock = { type: "mcp_tool_result"; tool_use_id: string; is_error?: boolean; content: unknown };
+    const mcpToolUses = (response.content as unknown[]).filter(
+      (b): b is McpToolUseBlock => (b as { type?: string }).type === "mcp_tool_use"
+    );
+    const mcpToolResults = (response.content as unknown[]).filter(
+      (b): b is McpToolResultBlock => (b as { type?: string }).type === "mcp_tool_result"
+    );
     const serverToolAudit = serverToolUses.length > 0 || codeExecResults.length > 0
       ? {
           server_tool_uses: serverToolUses.map((b) => ({ name: b.name, input: b.input })),
@@ -583,6 +606,13 @@ async function runAgentTurnWithTools(args: {
             stderr: (b.content?.stderr ?? "").slice(0, 2000),
             return_code: b.content?.return_code,
           })),
+        }
+      : null;
+    const mcpAudit = mcpToolUses.length > 0 || mcpToolResults.length > 0
+      ? {
+          tool_uses: mcpToolUses.map((b) => ({ name: b.name, server: b.server_name ?? null, input: b.input })),
+          result_count: mcpToolResults.length,
+          error_count: mcpToolResults.filter((b) => b.is_error === true).length,
         }
       : null;
 
@@ -609,6 +639,7 @@ async function runAgentTurnWithTools(args: {
         tool_use: toolUseBlocks.length > 0,
         stop_reason: response.stop_reason,
         ...(serverToolAudit ? { code_execution: serverToolAudit } : {}),
+        ...(mcpAudit ? { mcp: mcpAudit } : {}),
       },
     });
 

@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import { startTickLoop } from "./world/tick.js";
 import { db } from "./db.js";
 import { getRegisteredToolNames } from "./tools/registry.js";
+import { getRegisteredMcpServerNames } from "./tools/mcp-registry.js";
 
 /**
  * Cross-check every active agent's tool_access against the in-process tool
@@ -15,10 +16,11 @@ import { getRegisteredToolNames } from "./tools/registry.js";
  */
 async function validateAgentToolAccess(): Promise<void> {
   const knownTools = new Set(getRegisteredToolNames());
+  const knownMcp = new Set(getRegisteredMcpServerNames());
 
   const { data: agents, error } = await db
     .from("agents")
-    .select("id, name, tool_access")
+    .select("id, name, tool_access, mcp_access")
     .eq("tenant_id", config.tenantId)
     .eq("status", "active");
 
@@ -27,25 +29,33 @@ async function validateAgentToolAccess(): Promise<void> {
     return;
   }
 
-  const offenders: Array<{ name: string; unknown: string[] }> = [];
+  const toolOffenders: Array<{ name: string; unknown: string[] }> = [];
+  const mcpOffenders: Array<{ name: string; unknown: string[] }> = [];
   for (const agent of agents ?? []) {
     const access: string[] = (agent as { tool_access?: string[] }).tool_access ?? [];
-    const unknown = access.filter((t) => !knownTools.has(t));
-    if (unknown.length > 0) {
-      offenders.push({ name: (agent as { name: string }).name, unknown });
-    }
+    const mcpAccess: string[] = (agent as { mcp_access?: string[] }).mcp_access ?? [];
+    const unknownTools = access.filter((t) => !knownTools.has(t));
+    const unknownMcp = mcpAccess.filter((t) => !knownMcp.has(t));
+    const name = (agent as { name: string }).name;
+    if (unknownTools.length > 0) toolOffenders.push({ name, unknown: unknownTools });
+    if (unknownMcp.length > 0) mcpOffenders.push({ name, unknown: unknownMcp });
   }
 
-  if (offenders.length === 0) {
-    console.log(`Tool-access validator: OK (${agents?.length ?? 0} active agents, ${knownTools.size} registered tools).`);
+  if (toolOffenders.length === 0 && mcpOffenders.length === 0) {
+    console.log(
+      `Tool-access validator: OK (${agents?.length ?? 0} active agents, ${knownTools.size} tools, ${knownMcp.size} MCP servers).`
+    );
     return;
   }
-
-  console.warn(`Tool-access validator: ${offenders.length} agent(s) reference unknown tools:`);
-  for (const o of offenders) {
-    console.warn(`  - ${o.name}: [${o.unknown.join(", ")}]`);
+  if (toolOffenders.length > 0) {
+    console.warn(`Tool-access validator: ${toolOffenders.length} agent(s) reference unknown tools:`);
+    for (const o of toolOffenders) console.warn(`  - ${o.name}: [${o.unknown.join(", ")}]`);
   }
-  console.warn("(These tools will be silently dropped at runtime. Fix tool_access or update the registry.)");
+  if (mcpOffenders.length > 0) {
+    console.warn(`MCP-access validator: ${mcpOffenders.length} agent(s) reference unknown MCP servers:`);
+    for (const o of mcpOffenders) console.warn(`  - ${o.name}: [${o.unknown.join(", ")}]`);
+  }
+  console.warn("(Unknown entries will be silently dropped at runtime. Fix the column or update the registry.)");
 }
 
 async function main() {
