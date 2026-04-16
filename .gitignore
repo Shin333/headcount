@@ -19,3 +19,6 @@ workspace/*
 tmp/
 *.tsbuildinfo
 files.zip
+
+# Day 26: PM2 log output
+logs/

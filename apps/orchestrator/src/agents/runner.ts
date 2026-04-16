@@ -101,6 +101,79 @@ export async function isOverHourlyCap(): Promise<boolean> {
 }
 
 // ============================================================================
+// Day 26: daily cost circuit breaker
+// ============================================================================
+// Rolling 24h spend gate that complements the hourly cap. Designed to catch
+// slow-burn runaway scenarios where no single hour trips the hourly cap but
+// the daily total gets out of control. Trip behavior is two-level:
+//
+//   - At DAILY_COST_WARN_FRACTION (default 80%) → log a warning row in
+//     cost_alerts with level='warning'. Agent turns still run. Once per day.
+//
+//   - At DAILY_COST_CAP_USD → log a row with level='circuit_open'. Agent
+//     turns are blocked by isCircuitOpen() until the 24h window clears
+//     the cap naturally (i.e. old hour buckets age out).
+//
+// Alerts are idempotent per (tenant_id, day, level) — a circuit won't
+// re-fire within the same UTC day.
+// ============================================================================
+
+async function getRollingDaySpend(): Promise<number> {
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await db
+    .from("wall_token_spend")
+    .select("estimated_cost_usd")
+    .eq("tenant_id", config.tenantId)
+    .gte("wall_hour", dayAgo);
+  if (error) {
+    console.warn(`[cost-breaker] rolling-day-spend query failed: ${error.message}`);
+    return 0;
+  }
+  let total = 0;
+  for (const row of data ?? []) total += Number(row.estimated_cost_usd ?? 0);
+  return total;
+}
+
+async function recordCostAlert(
+  level: "warning" | "circuit_open",
+  spendAtTrip: number,
+  message: string
+): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  const { error } = await db.from("cost_alerts").insert({
+    tenant_id: config.tenantId,
+    day,
+    level,
+    spend_at_trip: spendAtTrip,
+    cap_usd: config.dailyCostCapUsd,
+    message,
+  });
+  if (error) {
+    // 23505 = unique violation = already fired for (tenant, day, level). Expected.
+    const pg = error as { code?: string };
+    if (pg.code !== "23505") {
+      console.warn(`[cost-breaker] insert cost_alert failed: ${error.message}`);
+    }
+  } else {
+    console.warn(`[cost-breaker] ${level.toUpperCase()} $${spendAtTrip.toFixed(2)} / $${config.dailyCostCapUsd.toFixed(2)}: ${message}`);
+  }
+}
+
+export async function isCircuitOpen(): Promise<boolean> {
+  const spend = await getRollingDaySpend();
+  const cap = config.dailyCostCapUsd;
+  const warnAt = cap * config.dailyCostWarnFraction;
+  if (spend >= cap) {
+    await recordCostAlert("circuit_open", spend, `Daily cap of $${cap.toFixed(2)} reached; blocking new agent turns until rolling 24h spend drops below the cap.`);
+    return true;
+  }
+  if (spend >= warnAt) {
+    await recordCostAlert("warning", spend, `Daily spend at ${((spend / cap) * 100).toFixed(0)}% of cap.`);
+  }
+  return false;
+}
+
+// ============================================================================
 // Token budget pre-charge (Day 22b: race-window fix)
 // ============================================================================
 // The Day 1 implementation checked `tokens_used_today >= daily_token_budget`
@@ -227,9 +300,21 @@ async function runAgentTurnSingleCall(args: {
     };
   }
 
-  // Wall-hour cost cap (Day 2b.2)
+  // Wall-hour cost cap (Day 2b.2) + Day 26 daily circuit breaker
   if (await isOverHourlyCap()) {
     console.log(`[${agent.name}] skipped: hourly cost cap reached`);
+    return {
+      text: "",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      costUsd: 0,
+      durationMs: 0,
+      skipped: "budget_exceeded",
+    };
+  }
+  if (await isCircuitOpen()) {
+    console.log(`[${agent.name}] skipped: daily cost circuit breaker OPEN`);
     return {
       text: "",
       inputTokens: 0,

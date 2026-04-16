@@ -8,10 +8,13 @@ declare const ServerEnvSchema: z.ZodObject<{
     SPEED_MULTIPLIER: z.ZodDefault<z.ZodNumber>;
     DAILY_TOKEN_CAP: z.ZodDefault<z.ZodNumber>;
     HOURLY_COST_CAP_USD: z.ZodDefault<z.ZodNumber>;
+    DAILY_COST_CAP_USD: z.ZodDefault<z.ZodNumber>;
+    DAILY_COST_WARN_FRACTION: z.ZodDefault<z.ZodNumber>;
     CHATTER_POSTS_PER_AGENT_PER_DAY: z.ZodDefault<z.ZodNumber>;
     REFLECTION_WALL_INTERVAL_HOURS: z.ZodDefault<z.ZodNumber>;
     CHATTER_ENABLED: z.ZodDefault<z.ZodBoolean>;
     TAVILY_API_KEY: z.ZodOptional<z.ZodString>;
+    GEMINI_API_KEY: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     SUPABASE_URL: string;
     SUPABASE_SERVICE_ROLE_KEY: string;
@@ -21,10 +24,13 @@ declare const ServerEnvSchema: z.ZodObject<{
     SPEED_MULTIPLIER: number;
     DAILY_TOKEN_CAP: number;
     HOURLY_COST_CAP_USD: number;
+    DAILY_COST_CAP_USD: number;
+    DAILY_COST_WARN_FRACTION: number;
     CHATTER_POSTS_PER_AGENT_PER_DAY: number;
     REFLECTION_WALL_INTERVAL_HOURS: number;
     CHATTER_ENABLED: boolean;
     TAVILY_API_KEY?: string | undefined;
+    GEMINI_API_KEY?: string | undefined;
 }, {
     SUPABASE_URL: string;
     SUPABASE_SERVICE_ROLE_KEY: string;
@@ -34,10 +40,13 @@ declare const ServerEnvSchema: z.ZodObject<{
     SPEED_MULTIPLIER?: number | undefined;
     DAILY_TOKEN_CAP?: number | undefined;
     HOURLY_COST_CAP_USD?: number | undefined;
+    DAILY_COST_CAP_USD?: number | undefined;
+    DAILY_COST_WARN_FRACTION?: number | undefined;
     CHATTER_POSTS_PER_AGENT_PER_DAY?: number | undefined;
     REFLECTION_WALL_INTERVAL_HOURS?: number | undefined;
     CHATTER_ENABLED?: boolean | undefined;
     TAVILY_API_KEY?: string | undefined;
+    GEMINI_API_KEY?: string | undefined;
 }>;
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;
 export declare function loadServerEnv(): ServerEnv;

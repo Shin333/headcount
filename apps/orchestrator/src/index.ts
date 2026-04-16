@@ -4,6 +4,8 @@ import { startTickLoop } from "./world/tick.js";
 import { db } from "./db.js";
 import { getRegisteredToolNames } from "./tools/registry.js";
 import { getRegisteredMcpServerNames } from "./tools/mcp-registry.js";
+import { registerShutdown, registerCloser } from "./ops/shutdown.js";
+import { closeBrowser } from "./tools/browser.js";
 
 /**
  * Cross-check every active agent's tool_access against the in-process tool
@@ -89,6 +91,11 @@ async function main() {
 
   await validateAgentToolAccess();
 
+  // Day 26: register closers so PM2 SIGTERM releases Chromium + closes the
+  // realtime subscriptions cleanly instead of leaking processes on restart.
+  registerCloser(async () => { await closeBrowser(); });
+  registerShutdown();
+
   startTickLoop();
 }
 
@@ -97,12 +104,5 @@ main().catch((err) => {
   process.exit(1);
 });
 
-// Graceful shutdown
-process.on("SIGINT", () => {
-  console.log("Shutting down...");
-  process.exit(0);
-});
-process.on("SIGTERM", () => {
-  console.log("Shutting down...");
-  process.exit(0);
-});
+// Day 26: shutdown handlers moved to ops/shutdown.ts so closers (Chromium,
+// realtime subscriptions, etc.) can register and actually run on SIGTERM.

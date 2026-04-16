@@ -18,6 +18,15 @@ const ServerEnvSchema = z.object({
   // "runaway protection" thing. $5/hour is a generous ceiling that should
   // never bite normal use but still catches infinite loops.
   HOURLY_COST_CAP_USD: z.coerce.number().positive().default(5.00),
+  // Day 26 (Option B): daily spend circuit breaker. When the rolling 24h
+  // spend from wall_token_spend hits this cap, the runner stops all new
+  // agent turns and logs a cost_alerts row. Designed to catch runaway
+  // loops that evade the hourly cap over longer windows. Default $20/day.
+  DAILY_COST_CAP_USD: z.coerce.number().positive().default(20.00),
+  // Day 26: soft warning threshold, expressed as a fraction of the daily
+  // cap (0.8 = 80%). Crossing this fires a single cost_alerts row of
+  // level='warning'; crossing the cap fires level='circuit_open'.
+  DAILY_COST_WARN_FRACTION: z.coerce.number().positive().default(0.8),
   CHATTER_POSTS_PER_AGENT_PER_DAY: z.coerce.number().int().positive().default(3),
   REFLECTION_WALL_INTERVAL_HOURS: z.coerce.number().int().positive().default(1),
   CHATTER_ENABLED: z.coerce.boolean().default(true),

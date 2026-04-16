@@ -12,6 +12,8 @@ export const config = {
   dailyTokenCap: env.DAILY_TOKEN_CAP,
   // Day 2b additions
   hourlyCostCapUsd: env.HOURLY_COST_CAP_USD,
+  dailyCostCapUsd: env.DAILY_COST_CAP_USD,
+  dailyCostWarnFraction: env.DAILY_COST_WARN_FRACTION,
   chatterPostsPerAgentPerDay: env.CHATTER_POSTS_PER_AGENT_PER_DAY,
   reflectionWallIntervalHours: env.REFLECTION_WALL_INTERVAL_HOURS,
   chatterEnabled: env.CHATTER_ENABLED,

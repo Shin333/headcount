@@ -161,6 +161,46 @@ export async function GET() {
   // ----- Tool registry summary -----
   const registryDriftAgents = agentRows.filter((a) => a.unknown_tools.length > 0).length;
 
+  // ----- Cost circuit breaker -----
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: costAlerts } = await db
+    .from("cost_alerts")
+    .select("level, spend_at_trip, cap_usd, message, created_at")
+    .eq("tenant_id", TENANT_ID)
+    .eq("day", today)
+    .order("created_at", { ascending: false });
+
+  const todaysSpend = (spend ?? [])
+    .filter((r) => r.wall_hour >= new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+    .reduce((s, r) => s + Number(r.estimated_cost_usd ?? 0), 0);
+  const circuitOpen = (costAlerts ?? []).some((a) => a.level === "circuit_open");
+
+  // ----- Dead-letter queue -----
+  const { data: dlqRows } = await db
+    .from("commitments")
+    .select("id, agent_id, project_id, description, deadline_at, nudge_count, last_nudge_at")
+    .eq("tenant_id", TENANT_ID)
+    .eq("status", "stalled")
+    .is("dlq_resolved_at", null)
+    .order("last_nudge_at", { ascending: true, nullsFirst: true })
+    .limit(50);
+
+  const dlqProjectIds = Array.from(new Set((dlqRows ?? []).map((r) => r.project_id).filter(Boolean) as string[]));
+  const dlqProjectTitles = new Map<string, string>();
+  if (dlqProjectIds.length > 0) {
+    const { data: dlqProjects } = await db.from("projects").select("id, title").in("id", dlqProjectIds);
+    for (const p of dlqProjects ?? []) dlqProjectTitles.set(p.id, p.title);
+  }
+  const dlq = (dlqRows ?? []).map((r) => ({
+    id: r.id,
+    agent_name: agentNameById.get(r.agent_id) ?? r.agent_id.slice(0, 8),
+    project_title: r.project_id ? dlqProjectTitles.get(r.project_id) ?? null : null,
+    description: r.description,
+    deadline_at: r.deadline_at,
+    nudge_count: r.nudge_count,
+    last_nudge_at: r.last_nudge_at,
+  }));
+
   return NextResponse.json({
     generated_at: nowIso,
     agents: agentRows,
@@ -183,5 +223,11 @@ export async function GET() {
       known: KNOWN_TOOL_NAMES,
       agents_with_drift: registryDriftAgents,
     },
+    cost_breaker: {
+      rolling_24h_spend: todaysSpend,
+      today_alerts: costAlerts ?? [],
+      circuit_open: circuitOpen,
+    },
+    dlq: dlq,
   });
 }

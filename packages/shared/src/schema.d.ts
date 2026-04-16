@@ -139,10 +139,12 @@ export declare const AgentSchema: z.ZodObject<{
     last_reset_company_date: z.ZodDefault<z.ZodNullable<z.ZodString>>;
     last_reflection_at: z.ZodDefault<z.ZodNullable<z.ZodString>>;
     tool_access: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
+    mcp_access: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
     always_on: z.ZodDefault<z.ZodBoolean>;
     in_standup: z.ZodDefault<z.ZodBoolean>;
     is_human: z.ZodDefault<z.ZodBoolean>;
     tic: z.ZodDefault<z.ZodNullable<z.ZodString>>;
+    fallback_agent_id: z.ZodDefault<z.ZodNullable<z.ZodString>>;
     created_at: z.ZodString;
     updated_at: z.ZodString;
 }, "strip", z.ZodTypeAny, {
@@ -180,10 +182,12 @@ export declare const AgentSchema: z.ZodObject<{
     last_reset_company_date: string | null;
     last_reflection_at: string | null;
     tool_access: string[];
+    mcp_access: string[];
     always_on: boolean;
     in_standup: boolean;
     is_human: boolean;
     tic: string | null;
+    fallback_agent_id: string | null;
     created_at: string;
     updated_at: string;
 }, {
@@ -223,10 +227,12 @@ export declare const AgentSchema: z.ZodObject<{
     last_reset_company_date?: string | null | undefined;
     last_reflection_at?: string | null | undefined;
     tool_access?: string[] | undefined;
+    mcp_access?: string[] | undefined;
     always_on?: boolean | undefined;
     in_standup?: boolean | undefined;
     is_human?: boolean | undefined;
     tic?: string | null | undefined;
+    fallback_agent_id?: string | null | undefined;
 }>;
 export type Agent = z.infer<typeof AgentSchema>;
 export declare const ForumPostSchema: z.ZodObject<{
@@ -265,6 +271,7 @@ export declare const DmSchema: z.ZodObject<{
     to_id: z.ZodString;
     body: z.ZodString;
     read_at: z.ZodNullable<z.ZodString>;
+    in_flight_since: z.ZodDefault<z.ZodNullable<z.ZodString>>;
     created_at: z.ZodString;
 }, "strip", z.ZodTypeAny, {
     id: string;
@@ -274,6 +281,7 @@ export declare const DmSchema: z.ZodObject<{
     from_id: string;
     to_id: string;
     read_at: string | null;
+    in_flight_since: string | null;
 }, {
     id: string;
     tenant_id: string;
@@ -282,6 +290,7 @@ export declare const DmSchema: z.ZodObject<{
     from_id: string;
     to_id: string;
     read_at: string | null;
+    in_flight_since?: string | null | undefined;
 }>;
 export type Dm = z.infer<typeof DmSchema>;
 export declare const ProposalStatusSchema: z.ZodEnum<["pending", "approved", "rejected", "applied"]>;
@@ -321,6 +330,10 @@ export declare const PromptEvolutionEntrySchema: z.ZodObject<{
     reviewed_by_ceo_at: string | null;
 }>;
 export type PromptEvolutionEntry = z.infer<typeof PromptEvolutionEntrySchema>;
+export declare const KNOWN_MCP_SERVERS: readonly ["alai"];
+export type KnownMcpServer = (typeof KNOWN_MCP_SERVERS)[number];
+export declare const KNOWN_TOOL_NAMES: readonly ["web_search", "code_artifact_create", "markdown_artifact_create", "calendar_read", "image_generate", "dm_send", "roster_lookup", "project_create", "project_post", "commitment_create", "imagen_generate", "read_artifact", "project_complete", "code_execution", "browser_fetch_text", "browser_extract_links", "browser_screenshot"];
+export type KnownToolName = (typeof KNOWN_TOOL_NAMES)[number];
 export declare const Channels: {
     readonly ANNOUNCEMENTS: "announcements";
     readonly GENERAL: "general";
@@ -439,3 +452,269 @@ export declare const DepartmentSchema: z.ZodObject<{
     head_agent_id: string | null;
 }>;
 export type Department = z.infer<typeof DepartmentSchema>;
+export declare const ArtifactContentTypeSchema: z.ZodEnum<["markdown", "plaintext", "code"]>;
+export type ArtifactContentType = z.infer<typeof ArtifactContentTypeSchema>;
+export declare const ArtifactStatusSchema: z.ZodEnum<["draft", "accepted", "rejected", "superseded"]>;
+export type ArtifactStatus = z.infer<typeof ArtifactStatusSchema>;
+export declare const ArtifactSchema: z.ZodObject<{
+    id: z.ZodString;
+    tenant_id: z.ZodString;
+    agent_id: z.ZodString;
+    title: z.ZodString;
+    summary: z.ZodNullable<z.ZodString>;
+    content_type: z.ZodEnum<["markdown", "plaintext", "code"]>;
+    language: z.ZodNullable<z.ZodString>;
+    file_path: z.ZodString;
+    size_bytes: z.ZodNumber;
+    parent_artifact_id: z.ZodNullable<z.ZodString>;
+    version: z.ZodNumber;
+    status: z.ZodEnum<["draft", "accepted", "rejected", "superseded"]>;
+    triggered_by_dm_id: z.ZodNullable<z.ZodString>;
+    triggered_by_post_id: z.ZodNullable<z.ZodString>;
+    created_at: z.ZodString;
+    accepted_at: z.ZodNullable<z.ZodString>;
+    accepted_by: z.ZodNullable<z.ZodString>;
+}, "strip", z.ZodTypeAny, {
+    status: "rejected" | "draft" | "accepted" | "superseded";
+    id: string;
+    tenant_id: string;
+    created_at: string;
+    agent_id: string;
+    title: string;
+    summary: string | null;
+    content_type: "code" | "markdown" | "plaintext";
+    language: string | null;
+    file_path: string;
+    size_bytes: number;
+    parent_artifact_id: string | null;
+    version: number;
+    triggered_by_dm_id: string | null;
+    triggered_by_post_id: string | null;
+    accepted_at: string | null;
+    accepted_by: string | null;
+}, {
+    status: "rejected" | "draft" | "accepted" | "superseded";
+    id: string;
+    tenant_id: string;
+    created_at: string;
+    agent_id: string;
+    title: string;
+    summary: string | null;
+    content_type: "code" | "markdown" | "plaintext";
+    language: string | null;
+    file_path: string;
+    size_bytes: number;
+    parent_artifact_id: string | null;
+    version: number;
+    triggered_by_dm_id: string | null;
+    triggered_by_post_id: string | null;
+    accepted_at: string | null;
+    accepted_by: string | null;
+}>;
+export type Artifact = z.infer<typeof ArtifactSchema>;
+export declare const AgentCredentialSchema: z.ZodObject<{
+    id: z.ZodString;
+    tenant_id: z.ZodString;
+    agent_id: z.ZodString;
+    provider: z.ZodString;
+    scope: z.ZodString;
+    access_token: z.ZodString;
+    refresh_token: z.ZodNullable<z.ZodString>;
+    expires_at: z.ZodNullable<z.ZodString>;
+    granted_by: z.ZodString;
+    granted_at: z.ZodString;
+    last_used_at: z.ZodNullable<z.ZodString>;
+    use_count: z.ZodNumber;
+}, "strip", z.ZodTypeAny, {
+    id: string;
+    tenant_id: string;
+    agent_id: string;
+    provider: string;
+    scope: string;
+    access_token: string;
+    refresh_token: string | null;
+    expires_at: string | null;
+    granted_by: string;
+    granted_at: string;
+    last_used_at: string | null;
+    use_count: number;
+}, {
+    id: string;
+    tenant_id: string;
+    agent_id: string;
+    provider: string;
+    scope: string;
+    access_token: string;
+    refresh_token: string | null;
+    expires_at: string | null;
+    granted_by: string;
+    granted_at: string;
+    last_used_at: string | null;
+    use_count: number;
+}>;
+export type AgentCredential = z.infer<typeof AgentCredentialSchema>;
+export declare const RealActionAuditSchema: z.ZodObject<{
+    id: z.ZodString;
+    tenant_id: z.ZodString;
+    agent_id: z.ZodString;
+    tool_name: z.ZodString;
+    arguments_json: z.ZodRecord<z.ZodString, z.ZodUnknown>;
+    result_summary: z.ZodNullable<z.ZodString>;
+    result_full_json: z.ZodNullable<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+    success: z.ZodBoolean;
+    error_message: z.ZodNullable<z.ZodString>;
+    duration_ms: z.ZodNullable<z.ZodNumber>;
+    triggered_by_dm_id: z.ZodNullable<z.ZodString>;
+    created_at: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    id: string;
+    tenant_id: string;
+    created_at: string;
+    agent_id: string;
+    triggered_by_dm_id: string | null;
+    tool_name: string;
+    arguments_json: Record<string, unknown>;
+    result_summary: string | null;
+    result_full_json: Record<string, unknown> | null;
+    success: boolean;
+    error_message: string | null;
+    duration_ms: number | null;
+}, {
+    id: string;
+    tenant_id: string;
+    created_at: string;
+    agent_id: string;
+    triggered_by_dm_id: string | null;
+    tool_name: string;
+    arguments_json: Record<string, unknown>;
+    result_summary: string | null;
+    result_full_json: Record<string, unknown> | null;
+    success: boolean;
+    error_message: string | null;
+    duration_ms: number | null;
+}>;
+export type RealActionAudit = z.infer<typeof RealActionAuditSchema>;
+export declare const ProjectStatusSchema: z.ZodEnum<["active", "completed", "cancelled"]>;
+export type ProjectStatus = z.infer<typeof ProjectStatusSchema>;
+export declare const ProjectSchema: z.ZodObject<{
+    id: z.ZodString;
+    tenant_id: z.ZodString;
+    title: z.ZodString;
+    description: z.ZodString;
+    status: z.ZodEnum<["active", "completed", "cancelled"]>;
+    created_by: z.ZodNullable<z.ZodString>;
+    created_at: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    status: "active" | "completed" | "cancelled";
+    id: string;
+    tenant_id: string;
+    created_at: string;
+    title: string;
+    description: string;
+    created_by: string | null;
+}, {
+    status: "active" | "completed" | "cancelled";
+    id: string;
+    tenant_id: string;
+    created_at: string;
+    title: string;
+    description: string;
+    created_by: string | null;
+}>;
+export type Project = z.infer<typeof ProjectSchema>;
+export declare const ProjectMemberSchema: z.ZodObject<{
+    project_id: z.ZodString;
+    agent_id: z.ZodString;
+    added_at: z.ZodString;
+    added_by: z.ZodNullable<z.ZodString>;
+}, "strip", z.ZodTypeAny, {
+    agent_id: string;
+    project_id: string;
+    added_at: string;
+    added_by: string | null;
+}, {
+    agent_id: string;
+    project_id: string;
+    added_at: string;
+    added_by: string | null;
+}>;
+export type ProjectMember = z.infer<typeof ProjectMemberSchema>;
+export declare const ProjectMessageTypeSchema: z.ZodEnum<["message", "artifact", "system"]>;
+export type ProjectMessageType = z.infer<typeof ProjectMessageTypeSchema>;
+export declare const ProjectMessageSchema: z.ZodObject<{
+    id: z.ZodString;
+    project_id: z.ZodString;
+    agent_id: z.ZodString;
+    body: z.ZodString;
+    message_type: z.ZodEnum<["message", "artifact", "system"]>;
+    is_pinned: z.ZodDefault<z.ZodBoolean>;
+    created_at: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    id: string;
+    created_at: string;
+    body: string;
+    agent_id: string;
+    project_id: string;
+    message_type: "message" | "artifact" | "system";
+    is_pinned: boolean;
+}, {
+    id: string;
+    created_at: string;
+    body: string;
+    agent_id: string;
+    project_id: string;
+    message_type: "message" | "artifact" | "system";
+    is_pinned?: boolean | undefined;
+}>;
+export type ProjectMessage = z.infer<typeof ProjectMessageSchema>;
+export declare const CommitmentStatusSchema: z.ZodEnum<["pending", "resolved", "stalled", "cancelled"]>;
+export type CommitmentStatus = z.infer<typeof CommitmentStatusSchema>;
+export declare const CommitmentResolutionTypeSchema: z.ZodEnum<["artifact", "manual", "nudge_produced"]>;
+export type CommitmentResolutionType = z.infer<typeof CommitmentResolutionTypeSchema>;
+export declare const CommitmentSchema: z.ZodObject<{
+    id: z.ZodString;
+    tenant_id: z.ZodString;
+    agent_id: z.ZodString;
+    project_id: z.ZodNullable<z.ZodString>;
+    description: z.ZodString;
+    committed_at: z.ZodString;
+    deadline_at: z.ZodNullable<z.ZodString>;
+    status: z.ZodEnum<["pending", "resolved", "stalled", "cancelled"]>;
+    resolution_type: z.ZodNullable<z.ZodEnum<["artifact", "manual", "nudge_produced"]>>;
+    resolved_artifact_id: z.ZodNullable<z.ZodString>;
+    resolved_at: z.ZodNullable<z.ZodString>;
+    nudge_count: z.ZodDefault<z.ZodNumber>;
+    last_nudge_at: z.ZodNullable<z.ZodString>;
+    created_at: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    status: "pending" | "cancelled" | "resolved" | "stalled";
+    id: string;
+    tenant_id: string;
+    created_at: string;
+    agent_id: string;
+    description: string;
+    project_id: string | null;
+    committed_at: string;
+    deadline_at: string | null;
+    resolution_type: "artifact" | "manual" | "nudge_produced" | null;
+    resolved_artifact_id: string | null;
+    resolved_at: string | null;
+    nudge_count: number;
+    last_nudge_at: string | null;
+}, {
+    status: "pending" | "cancelled" | "resolved" | "stalled";
+    id: string;
+    tenant_id: string;
+    created_at: string;
+    agent_id: string;
+    description: string;
+    project_id: string | null;
+    committed_at: string;
+    deadline_at: string | null;
+    resolution_type: "artifact" | "manual" | "nudge_produced" | null;
+    resolved_artifact_id: string | null;
+    resolved_at: string | null;
+    last_nudge_at: string | null;
+    nudge_count?: number | undefined;
+}>;
+export type Commitment = z.infer<typeof CommitmentSchema>;

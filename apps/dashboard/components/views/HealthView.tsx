@@ -57,6 +57,24 @@ interface RunnerErrorByAgent {
   empty: number;
 }
 
+interface CostAlert {
+  level: "warning" | "circuit_open";
+  spend_at_trip: number;
+  cap_usd: number;
+  message: string | null;
+  created_at: string;
+}
+
+interface DlqItem {
+  id: string;
+  agent_name: string;
+  project_title: string | null;
+  description: string;
+  deadline_at: string | null;
+  nudge_count: number;
+  last_nudge_at: string | null;
+}
+
 interface HealthResponse {
   generated_at: string;
   agents: AgentRow[];
@@ -71,6 +89,12 @@ interface HealthResponse {
   };
   stuck_commitments: StuckCommitment[];
   tool_registry: { known: readonly string[]; agents_with_drift: number };
+  cost_breaker: {
+    rolling_24h_spend: number;
+    today_alerts: CostAlert[];
+    circuit_open: boolean;
+  };
+  dlq: DlqItem[];
 }
 
 function relTime(iso: string | null | undefined): string {
@@ -137,6 +161,25 @@ export function HealthView() {
   const maxHourSpend = recentSpend.reduce((m, r) => Math.max(m, Number(r.estimated_cost_usd)), 0.0001);
   const fallbackById = new Map(data.agents.map((a) => [a.id, a.name]));
 
+  const cap = data.cost_breaker.today_alerts[0]?.cap_usd ?? null;
+  const rolling = data.cost_breaker.rolling_24h_spend;
+
+  async function dlqAction(id: string, action: "kill" | "requeue" | "reassign", extra: Record<string, unknown> = {}) {
+    const res = await fetch(`/api/dlq/commitments/${id}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, ...extra }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(`Failed: ${body.error ?? res.status}`);
+      return;
+    }
+    // Force refresh
+    const r = await fetch("/api/health/status");
+    if (r.ok) setData(await r.json());
+  }
+
   return (
     <div className="space-y-8">
       <div className="flex items-baseline justify-between">
@@ -145,6 +188,24 @@ export function HealthView() {
           24h spend: <span className="font-mono text-ink-700">${totalDaySpend.toFixed(2)}</span>
         </p>
       </div>
+
+      {/* =============== Cost circuit breaker =============== */}
+      {(data.cost_breaker.circuit_open || data.cost_breaker.today_alerts.length > 0) && (
+        <section>
+          <div className={`rounded border p-3 ${data.cost_breaker.circuit_open ? "border-red-300 bg-red-50" : "border-amber-300 bg-amber-50"}`}>
+            <div className={`font-mono text-[10px] uppercase tracking-wider ${data.cost_breaker.circuit_open ? "text-red-800" : "text-amber-800"}`}>
+              {data.cost_breaker.circuit_open ? "cost circuit OPEN — agent turns blocked" : "cost alert"}
+            </div>
+            <div className={`mt-1 text-sm ${data.cost_breaker.circuit_open ? "text-red-900" : "text-amber-900"}`}>
+              Rolling 24h spend: <span className="font-mono font-semibold">${rolling.toFixed(2)}</span>
+              {cap !== null && <> / <span className="font-mono">${Number(cap).toFixed(2)}</span></>}
+            </div>
+            {data.cost_breaker.today_alerts[0]?.message && (
+              <div className="mt-1 text-xs text-ink-600">{data.cost_breaker.today_alerts[0].message}</div>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* =============== Ritual heartbeat =============== */}
       <section>
@@ -353,6 +414,67 @@ export function HealthView() {
                     </td>
                     <td className={`font-mono ${c.nudge_count >= 3 ? "text-red-700" : "text-amber-700"}`}>
                       {c.nudge_count}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* =============== Dead-letter queue =============== */}
+      <section>
+        <div className="mb-3 flex items-baseline justify-between">
+          <h2 className="font-mono text-xs uppercase tracking-wider text-ink-400">// dead-letter queue (stalled, no operator action)</h2>
+          <p className="text-xs text-ink-400">{data.dlq.length} item{data.dlq.length === 1 ? "" : "s"}</p>
+        </div>
+        {data.dlq.length === 0 ? (
+          <div className="rounded border border-ink-200 bg-white p-3 text-xs text-ink-400">
+            No stalled commitments awaiting your call. Clean slate.
+          </div>
+        ) : (
+          <div className="rounded border border-ink-200 bg-white overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-ink-50 text-left font-mono text-[10px] uppercase text-ink-400">
+                <tr>
+                  <th className="px-3 py-2">agent</th>
+                  <th>project</th>
+                  <th>description</th>
+                  <th>overdue</th>
+                  <th>actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.dlq.map((c) => (
+                  <tr key={c.id} className="border-t border-ink-100">
+                    <td className="px-3 py-1.5 font-medium text-ink-900">{c.agent_name}</td>
+                    <td className="text-ink-500">{c.project_title ?? "—"}</td>
+                    <td className="text-ink-700 max-w-md">{c.description}</td>
+                    <td className="font-mono text-[10px] text-red-700">
+                      {c.deadline_at ? relTime(c.deadline_at) : "—"}
+                    </td>
+                    <td>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => {
+                            if (confirm(`Kill this commitment? Cancels without further nudges.`)) dlqAction(c.id, "kill");
+                          }}
+                          className="rounded border border-red-300 bg-white px-2 py-0.5 text-[10px] text-red-700 hover:bg-red-50"
+                        >
+                          kill
+                        </button>
+                        <button
+                          onClick={() => {
+                            const mins = prompt("Re-queue with new deadline in how many minutes?", "60");
+                            if (!mins) return;
+                            dlqAction(c.id, "requeue", { deadline_minutes: Number(mins) || 60 });
+                          }}
+                          className="rounded border border-ink-300 bg-white px-2 py-0.5 text-[10px] text-ink-700 hover:bg-ink-50"
+                        >
+                          requeue
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
