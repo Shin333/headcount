@@ -145,6 +145,9 @@ export const KNOWN_TOOL_NAMES = [
   "read_artifact",
   "project_complete",
   "code_execution",
+  "browser_fetch_text",
+  "browser_extract_links",
+  "browser_screenshot",
 ] as const;
 export type KnownToolName = (typeof KNOWN_TOOL_NAMES)[number];
 

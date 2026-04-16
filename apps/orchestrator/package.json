@@ -15,7 +15,8 @@
     "@google/genai": "^1.49.0",
     "@headcount/shared": "workspace:*",
     "@supabase/supabase-js": "^2.45.4",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "playwright": "^1.59.1"
   },
   "devDependencies": {
     "@types/node": "^20.16.10",

@@ -12,6 +12,11 @@ import { imagenGenerateTool } from "./imagen.js";
 import { readArtifactTool } from "./read-artifact.js";
 import { projectCompleteTool } from "./project-complete.js";
 import { codeExecutionTool } from "./code-execution.js";
+import {
+  browserFetchTextTool,
+  browserExtractLinksTool,
+  browserScreenshotTool,
+} from "./browser.js";
 
 // ----------------------------------------------------------------------------
 // tools/registry.ts - the tool catalog
@@ -42,6 +47,9 @@ const TOOL_REGISTRY: Record<string, Tool> = {
   read_artifact: readArtifactTool,
   project_complete: projectCompleteTool,
   code_execution: codeExecutionTool,
+  browser_fetch_text: browserFetchTextTool,
+  browser_extract_links: browserExtractLinksTool,
+  browser_screenshot: browserScreenshotTool,
 };
 
 /**
