@@ -6,6 +6,7 @@ import { getRegisteredToolNames } from "./tools/registry.js";
 import { getRegisteredMcpServerNames } from "./tools/mcp-registry.js";
 import { registerShutdown, registerCloser } from "./ops/shutdown.js";
 import { closeBrowser } from "./tools/browser.js";
+import { isEncryptionKeyConfigured } from "./auth/crypto.js";
 
 /**
  * Cross-check every active agent's tool_access against the in-process tool
@@ -90,6 +91,15 @@ async function main() {
   console.log("Anthropic key present.");
 
   await validateAgentToolAccess();
+
+  // Day 27: warn (don't fail) when credential encryption key isn't set yet.
+  if (!isEncryptionKeyConfigured()) {
+    console.warn("CRED_ENCRYPTION_KEY not set — agent_credentials will be stored PLAINTEXT.");
+    console.warn("  Generate one: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"");
+    console.warn("  Then run: pnpm exec tsx src/seed/day27-encrypt-credentials.ts");
+  } else {
+    console.log("Credential encryption: enabled (AES-256-GCM).");
+  }
 
   // Day 26: register closers so PM2 SIGTERM releases Chromium + closes the
   // realtime subscriptions cleanly instead of leaking processes on restart.

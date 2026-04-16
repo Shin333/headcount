@@ -25,6 +25,7 @@ import { createServer } from "node:http";
 import { exec } from "node:child_process";
 import { db } from "../db.js";
 import { config } from "../config.js";
+import { encryptCredential, decryptCredential } from "./crypto.js";
 
 // ----------------------------------------------------------------------------
 // Types
@@ -328,8 +329,11 @@ export async function runGrantFlow(args: {
       agent_id: args.agentId,
       provider: args.provider,
       scope: args.scope,
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token ?? null,
+      // Day 27: AES-256-GCM at rest. encryptCredential is a no-op pass-through
+      // when CRED_ENCRYPTION_KEY is unset, so existing flows keep working
+      // until the operator provisions the key.
+      access_token: encryptCredential(tokens.access_token),
+      refresh_token: tokens.refresh_token ? encryptCredential(tokens.refresh_token) : null,
       expires_at: expiresAt,
       granted_by: args.grantedBy,
       granted_at: new Date().toISOString(),
@@ -385,7 +389,25 @@ export async function getValidAccessToken(args: {
     return null;
   }
 
-  let accessToken = cred.access_token;
+  // Day 27: decrypt-on-read. Plaintext rows pass through unchanged so the
+  // backfill seed can run incrementally.
+  let accessToken: string;
+  try {
+    accessToken = decryptCredential(cred.access_token);
+  } catch (err) {
+    console.error(`[google-oauth] failed to decrypt access_token for agent ${args.agentId}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+  const refreshToken = cred.refresh_token
+    ? (() => {
+        try {
+          return decryptCredential(cred.refresh_token);
+        } catch (err) {
+          console.error(`[google-oauth] failed to decrypt refresh_token for agent ${args.agentId}: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        }
+      })()
+    : null;
 
   // Check if token is expired or expires within the next 60 seconds
   const expiresAt = cred.expires_at ? new Date(cred.expires_at).getTime() : 0;
@@ -393,7 +415,7 @@ export async function getValidAccessToken(args: {
   const expiresInMs = expiresAt - now;
 
   if (expiresInMs < 60_000) {
-    if (!cred.refresh_token) {
+    if (!refreshToken) {
       console.error(
         `[google-oauth] access token expired and no refresh token available for agent ${args.agentId}`
       );
@@ -403,14 +425,15 @@ export async function getValidAccessToken(args: {
     console.log(`[google-oauth] refreshing access token for agent ${args.agentId.slice(0, 8)}...`);
     try {
       const oauthConfig = loadGoogleOAuthConfig();
-      const refreshed = await refreshAccessToken(oauthConfig, cred.refresh_token);
+      const refreshed = await refreshAccessToken(oauthConfig, refreshToken);
       accessToken = refreshed.access_token;
       const newExpiresAt = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
 
       await db
         .from("agent_credentials")
         .update({
-          access_token: accessToken,
+          // Day 27: re-encrypt the rotated token before storing
+          access_token: encryptCredential(accessToken),
           expires_at: newExpiresAt,
         })
         .eq("id", cred.id);

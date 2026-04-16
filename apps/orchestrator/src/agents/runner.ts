@@ -531,13 +531,17 @@ async function runAgentTurnWithTools(args: {
   }
 
   // Build the thinking config object once.
-  const thinkingConfig: { thinking?: { type: "adaptive" } } = useExtendedThinking
-    ? { thinking: { type: "adaptive" } }
+  // Day 27 hotfix: Anthropic deprecated `{ type: "adaptive" }`. Current shape
+  // is `{ type: "enabled", budget_tokens: N }`. Hardcoded 10k for now — generous
+  // for code_artifact_create reasoning, far below Opus output cap. If specific
+  // tools need a different budget later, lift onto Tool flag.
+  const thinkingConfig: { thinking?: { type: "enabled"; budget_tokens: number } } = useExtendedThinking
+    ? { thinking: { type: "enabled", budget_tokens: 10000 } }
     : {};
 
   if (useExtendedThinking) {
     console.log(
-      `[${agent.name}] thinking: adaptive (because tool set includes extended_thinking)`
+      `[${agent.name}] thinking: enabled budget=10000 (because tool set includes extended_thinking)`
     );
   }
   if (tokenOverride !== undefined) {

@@ -17,4 +17,5 @@ export const config = {
   chatterPostsPerAgentPerDay: env.CHATTER_POSTS_PER_AGENT_PER_DAY,
   reflectionWallIntervalHours: env.REFLECTION_WALL_INTERVAL_HOURS,
   chatterEnabled: env.CHATTER_ENABLED,
+  credEncryptionKey: env.CRED_ENCRYPTION_KEY,
 } as const;

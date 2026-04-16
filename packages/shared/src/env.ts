@@ -35,6 +35,14 @@ const ServerEnvSchema = z.object({
   // Day 13: Google Gemini API key for nanobanana image generation (optional -
   // image_generate tool returns a friendly error if missing, doesn't crash).
   GEMINI_API_KEY: z.string().min(1).optional(),
+  // Day 27 (Option B Session 2): symmetric key for AES-256-GCM encryption of
+  // agent_credentials.access_token / refresh_token. Must be 32 bytes,
+  // base64-encoded (44 characters with padding). Generate one with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+  // Optional: if absent, the code paths that write/read credentials degrade
+  // to plaintext (with a startup warning) so existing tokens keep working
+  // while you set up the key.
+  CRED_ENCRYPTION_KEY: z.string().min(1).optional(),
 });
 
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;
