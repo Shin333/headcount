@@ -18,17 +18,18 @@ This spec replaces the custom orchestrator with **Claude Code itself as the runt
 ## 2. Goals
 
 1. **Zero per-token API spend.** All AI calls route through Claude Max (primary) or ChatGPT Pro (fallback) subscriptions.
-2. **Hierarchical project routing.** A user-issued prompt enters via Eleanor (Chief of Staff), cascades down to department head → manager → associate, and bubbles results back up.
+2. **Smart depth-aware hierarchical routing.** A user-issued prompt enters via Eleanor (Chief of Staff). Each level — Eleanor, department head, manager, associate, intern — is intelligent enough to delegate to the *lowest competent level*, including skipping levels when appropriate. Interns do the most grunt work; senior agents do supervision and routing. Work is *spread*, not concentrated.
 3. **Per-agent learning via brain docs.** Each agent owns a markdown brain that accumulates skills and corrections, updated by an overnight learning cron.
-4. **Dashboard as the command surface.** All agent invocations originate from the dashboard, not from raw CLI usage.
+4. **Dashboard as the command surface with project-centric chat.** All agent invocations originate from the dashboard. **All communication for a project happens in that project's single shared chat** — no DMs, no personal channels. Every agent involved in a project (Eleanor down to intern) is added to the project chat. New agents joining mid-project are added dynamically.
 5. **Marketing-site pivot to AI consulting.** `onepark-web` becomes a transparent AI-consulting site under the Onepark Digital umbrella.
-6. **Runtime-switchable.** Today's primary is Claude Code; switching to Codex CLI (or a future runtime) when a better model lands should be a configuration change, not a rewrite.
+6. **Runtime-switchable, latest-model-always.** Today's primary is Claude Code; switching to Codex CLI (or a future runtime) when a better model lands is a configuration change, not a rewrite. Subagents always use the highest-tier model available on the active subscription — no model gets pinned to a stale tier in a markdown frontmatter.
+7. **Soft-ban resilient.** Explicit rate hygiene: jitter, burst avoidance, exponential backoff on errors, daily call budget. No detectable agent-farm patterns.
 
 ## 3. Non-goals
 
 - Parallel/async multi-agent execution. Strictly serial.
 - 24/7 autonomous operation. Cron jobs are limited to three named rituals.
-- Inter-agent chatter, DMs, fictional company time, or relationship sentiment tracking. All deleted.
+- Inter-agent chatter, **inter-agent DMs**, fictional company time, or relationship sentiment tracking. All deleted. Communication is project-scoped only.
 - API cost optimization (caching, batch API, Haiku routing). Not needed once subscription routing replaces metered calls.
 - A new client-facing product. The consulting positioning is a marketing pivot, not a SaaS launch.
 
@@ -51,22 +52,26 @@ This spec replaces the custom orchestrator with **Claude Code itself as the runt
 ┌────────────────────────────────────────────────────────────────┐
 │  Dashboard  (apps/dashboard, Next.js 14)                       │
 │                                                                │
-│  ┌─────────────┐ ┌──────────────┐ ┌──────────┐ ┌────────────┐  │
-│  │  COMMAND    │ │  PROJECTS    │ │  BRAINS  │ │  HEALTH    │  │
-│  │  prompt in  │ │  task tree   │ │  per-    │ │  cron      │  │
-│  │  agent pick │ │  per project │ │  agent   │ │  status    │  │
-│  │  output     │ │  + handoffs  │ │  editor  │ │  + quota   │  │
-│  └──────┬──────┘ └──────────────┘ └──────────┘ └────────────┘  │
-│         │ POST /api/run                                        │
-└─────────┼──────────────────────────────────────────────────────┘
-          │
-          ▼
+│  ┌──────────┐ ┌──────────────────────────┐ ┌───────┐ ┌──────┐  │
+│  │ COMMAND  │ │ PROJECTS                 │ │BRAINS │ │HEALTH│  │
+│  │ start    │ │ list of all chats        │ │per-   │ │cron+ │  │
+│  │ a new    │ │ + per-project chat:      │ │agent  │ │rate  │  │
+│  │ project  │ │  • participant list      │ │editor │ │budget│  │
+│  │          │ │  • full message log      │ │       │ │      │  │
+│  │          │ │  • handoff tree view     │ │       │ │      │  │
+│  └────┬─────┘ └──────────────────────────┘ └───────┘ └──────┘  │
+│       │ POST /api/run                                          │
+└───────┼────────────────────────────────────────────────────────┘
+        │
+        ▼
 ┌────────────────────────────────────────────────────────────────┐
 │  Run dispatcher (apps/orchestrator, slimmed)                   │
 │                                                                │
 │  - Spawns Claude Code session via Claude Agent SDK             │
 │  - Streams events back over WebSocket / SSE                    │
-│  - Logs run start/finish/handoff to Supabase                   │
+│  - Writes every agent run + handoff as a project_message       │
+│  - Adds joining agents to project_participants                 │
+│  - Enforces rate hygiene (jitter, daily budget, backoff)       │
 │  - Falls back to Codex CLI if Claude is unreachable            │
 └─────────┬──────────────────────────────────────────────────────┘
           │
@@ -75,20 +80,28 @@ This spec replaces the custom orchestrator with **Claude Code itself as the runt
 │  Claude Code (subscription auth — Claude Max)                  │
 │                                                                │
 │  Initial prompt → Eleanor (Chief of Staff)                     │
-│    └─ reads agents/registry.md (auto-generated org chart)      │
-│    └─ Agent tool dispatches to Department Head                 │
-│        └─ Agent tool dispatches to Manager                     │
-│            └─ Agent tool dispatches to Associate               │
-│    ← outputs propagate back up                                 │
+│    └─ reads agents/registry.md (full sub-tree visibility,      │
+│       not just direct reports)                                 │
+│    └─ decides DEPTH — dispatches to the lowest competent level │
+│       (Dept Head, OR Manager, OR Associate, OR Intern)         │
+│    └─ Agent tool dispatch cascades; each level makes the same  │
+│       depth decision:                                          │
+│                                                                │
+│       Eleanor → Dept Head → Manager → Associate → Intern       │
+│       (any level may skip levels below to spread work down)    │
+│                                                                │
+│    ← outputs propagate back up the chain                       │
 │                                                                │
 │  Each subagent reads brains/<id>.md before working             │
-│  Tools: Read, Write, Edit, Bash, MCP                           │
-│  Bash → codex exec when GPT-5 reasoning genuinely fits         │
+│  Model: highest-tier on the active subscription                │
+│         (no `model:` pinned in frontmatters — see §6.1)        │
+│  Tools: Read, Write, Edit, Bash, MCP, Agent                    │
+│  Bash → codex exec when GPT reasoning genuinely fits           │
 └─────────┬──────────────────────────────────────────────────────┘
           │ logs to
           ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  Supabase (simplified — 7 tables, see §7)                      │
+│  Supabase (simplified — 10 tables, see §7)                     │
 └────────────────────────────────────────────────────────────────┘
 
 Cron jobs (only three):
@@ -113,51 +126,69 @@ The original plan was to build a provider-agnostic adapter that read agent defin
 
 The remaining custom code is small: a dispatcher that launches Claude Code sessions and a dashboard that drives it.
 
-### 5.2 Hierarchical routing pattern
+### 5.2 Hierarchical routing pattern (smart, depth-aware)
+
+The hierarchy has **five tiers**: Eleanor (exec) → Department Head (director) → Manager → Associate → Intern. Each agent above an intern is intelligent enough to decide *which level* the work belongs at — not just blindly forward to the next level down.
+
+The default *philosophy* is **delegate to the lowest competent level** so senior agents don't waste their time on grunt work and so work is spread across the org. Interns get most of the day-to-day execution; associates supervise interns and handle work above intern competence; managers coordinate associates; department heads handle scope & cross-team decisions; Eleanor handles routing & company-level questions.
 
 ```
 User prompts dashboard
         ↓
 Dispatcher launches Claude Code with Eleanor as the entry subagent
+The dashboard creates a new project_messages thread and adds Eleanor
+as the first project_participant.
         ↓
-Eleanor reads `agents/registry.md` (compressed org chart)
-Eleanor decides which department(s) the request touches
-Eleanor invokes the Agent tool, dispatching to the relevant department head
+Eleanor reads agents/registry.md (FULL sub-tree, not just direct reports)
+Eleanor reads her brain
+Eleanor judges the work:
+  • Cross-functional or strategic? → dispatch to Department Head
+  • Single-team but coordination-heavy? → dispatch to Manager directly
+  • Bounded execution? → dispatch to Associate directly
+  • Trivial grunt task? → dispatch to Intern directly
+Eleanor invokes the Agent tool with chosen target.
+The dispatcher adds that target to project_participants.
         ↓
-Department head reads their brain + the project context
-Department head decides scope and which manager to involve
-Department head invokes the Agent tool, dispatching to the manager
+Receiving agent reads their brain + project_messages thread for context
+Receiving agent makes the same depth-decision:
+  • Can I do this myself competently? → do it
+  • Should this go further down? → dispatch via Agent tool
+The dispatcher adds the new participant to the project chat each time.
         ↓
-Manager reads their brain
-Manager decides scope and which associate to assign
-Manager invokes the Agent tool, dispatching to the associate
+Cascade continues until someone at the right competence level does the work.
         ↓
-Associate does the actual work, returns the artifact
+Outputs propagate back up the chain. Each upward level may add review,
+framing, or summary, all visible as new project_messages.
         ↓
-Outputs propagate back up the chain. Each level may add framing, quality checks, or a summary
-        ↓
-Final response surfaces in the dashboard with the full handoff tree visible
+Final response surfaces as a project_message from Eleanor (or whoever
+finalizes), tagged as the project's final output.
 ```
 
-The user can intervene at any point: the dashboard streams each handoff event live, and the user can pause, redirect, or skip a level.
+**All inter-agent communication for the project happens in the project chat.** No DMs. No personal channels. Every agent who joins (via handoff) is added to `project_participants` and sees the full thread. New agents added later (mid-project pivot) see the full prior context.
 
-### 5.3 Provider switchability
+The user can intervene at any point: the dashboard streams each handoff event live, and the user can pause, redirect, or skip a level. User comments are written into the same `project_messages` thread.
 
-The `model:` field in each subagent's frontmatter today resolves to a Claude tier. To keep the design provider-flippable, we adopt a config layer:
+### 5.3 Provider switchability + always-latest-model
+
+Two layers of switchability:
+
+**Layer 1 — runtime selection (Claude vs Codex).** A small config:
 
 ```
 config/runtime.ts
   PRIMARY_RUNTIME = 'claude-code'   // 'claude-code' | 'codex'
   FALLBACK_RUNTIME = 'codex'
   AGENT_OVERRIDES = {
-    // optional per-agent overrides for cases where one model genuinely wins
-    'devraj-pillai': 'codex',  // hypothetical: GPT-5 better at this role's work
+    // optional per-agent overrides where one provider's model genuinely wins
+    'devraj-pillai': 'codex',  // hypothetical: GPT model better for this role
   }
 ```
 
-The dispatcher reads `PRIMARY_RUNTIME` and launches the corresponding CLI. When Anthropic ships a new top model and we stay on Claude, the change is one line. When OpenAI ships a model that decisively beats Claude across the board, swap `PRIMARY_RUNTIME = 'codex'`. The subagent definitions stay identical; Codex receives the personality as a system-prompt prefix.
+The dispatcher reads `PRIMARY_RUNTIME` and launches the corresponding CLI. When OpenAI ships a model that decisively beats Claude across the board, swap `PRIMARY_RUNTIME = 'codex'`. The subagent definitions stay identical; Codex receives the personality as a system-prompt prefix.
 
-This is the **direct-injection** pattern — the agent definition is provider-agnostic content that whichever runtime executes.
+**Layer 2 — model tier (within a runtime).** Subagent frontmatters do NOT pin a `model:` field (this gets stripped in §6.1's migration script). Without a pinned tier, Claude Code uses the session's default model — which on Claude Max is Opus, the highest available. When Anthropic ships a successor (e.g. Opus 5), the session default updates and every subagent picks up the new model with zero edits. Same logic applies to Codex — the CLI's default uses the highest tier the ChatGPT Pro subscription allows.
+
+This is the **direct-injection** pattern — the agent definition is provider-agnostic content that whichever runtime executes, always at the best model that subscription provides.
 
 ## 6. Components in detail
 
@@ -183,13 +214,15 @@ You are Adrian Rozario, Security Engineer at Onepark Digital. You report to Tsai
 ...
 ```
 
-**Required additions to every agent file (one-time pass):**
+**Required edits to every agent file (one-time pass):**
 1. A `# Your brain` section instructing the agent to read `brains/<id>.md` before any task and to append new learnings via the `Edit` tool.
-2. A `# Your reports` section listing the agent's direct reports (the agents they can dispatch to via the Agent tool). Empty for associates.
+2. A `# Your reports` section listing the agent's **full sub-tree** (every agent at any level beneath them), not just direct reports. This enables smart depth-skipping. Empty for interns.
 3. A `# Your manager` section listing who they report to (for context, not dispatch).
-4. The Agent tool added to `tools:` for any agent who can dispatch downward.
+4. A `# Routing guidance` section instructing the agent: *"When you receive work, decide whether to do it yourself or delegate. Delegate to the lowest competent level — interns do most grunt work, associates supervise interns, managers coordinate associates, etc. Skip levels when appropriate."*
+5. The `Agent` tool added to `tools:` for any agent who can dispatch downward (everyone except interns).
+6. **Strip the `model:` field from frontmatters.** Currently all 120 files pin `model: sonnet`, which is stale. The whole point of subscription routing is to always run on the highest-tier model the active subscription provides (Opus 4 today on Claude Max). Removing the field lets Claude Code use the session's default — which on Max is Opus. When Anthropic ships a successor model, the subagents pick it up automatically. No per-file maintenance.
 
-A small one-time migration script reads the existing definitions, cross-references the `manager_id` graph from the Supabase `agents` table, and writes the additions back.
+A small one-time migration script reads the existing definitions, cross-references the `manager_id` graph from the Supabase `agents` table to compute each agent's sub-tree, and writes the additions back. The same script strips the `model:` line.
 
 ### 6.2 Brain docs (`agents/brains/<id>.md`)
 
@@ -240,18 +273,24 @@ The dispatcher exposes one HTTP endpoint to the dashboard: `POST /api/run` accep
 
 Replace the existing four-view nav (TODAY, COMPANY, WORKBENCH, MESSAGES) with:
 
-1. **COMMAND** — landing view. Single textarea for project prompt; a default "Send to Eleanor" button; an optional agent override; a runtime override. After submit, the live handoff tree streams in.
-2. **PROJECTS** — list of past and active runs, each opening to its full handoff tree (which agents touched it, in what order, what each produced).
+1. **COMMAND** — landing view. Single textarea: *"What do you need done?"*. Submit creates a new project, opens the project chat, and dispatches the prompt to Eleanor as the first message. Optional advanced controls: agent override (skip Eleanor, send directly to a specific agent), runtime override (Codex instead of Claude).
+
+2. **PROJECTS** — left rail lists every project (active + completed) with most-recent-message preview. Selecting one opens **the project chat**:
+   - **Header**: project title (auto-generated from prompt), status, list of `project_participants` with their tier badge (exec/director/manager/associate/intern). Participants accumulate as agents are added via handoff.
+   - **Message log**: every `project_message` rendered as a chat — sender avatar/name, body, timestamp, kind tag (`handoff`/`output`/`comment`). User comments interleave.
+   - **Handoff tree** (collapsible side-panel): visualizes the dispatch chain so you can see *who handed off to whom*, useful when the chat grows long.
+   - **Compose box**: lets the user inject a comment into the chat that the next-acting agent will see.
+   - **Live**: streams new messages and handoffs in real time via SSE.
+
 3. **BRAINS** — agent picker → renders the agent's brain markdown with edit-in-place. Shows the last N nightly-learning diffs.
-4. **HEALTH** — three rows for the cron jobs (last run, status, output preview), plus a row for runtime quota status (Claude Max remaining %, Codex remaining %).
 
-Drop entirely: TODAY (no chatter, no DMs to surface), MESSAGES (no inter-agent messaging), WORKBENCH (no longer the right shape).
+4. **HEALTH** — three rows for the cron jobs (last run, status, output preview); runtime quota row (Claude Max consumed %, Codex consumed %, and rate-budget headroom — see §6.8); soft-signal row (latency trend, recent CAPTCHA events, model downgrades).
 
-The COMMAND view's streaming display follows the dispatcher's SSE feed: each handoff event becomes a node in a tree, with the active node highlighted and the user's "intervene" buttons live (pause / redirect / skip).
+**Dropped entirely:** TODAY (no chatter to surface), MESSAGES (no DMs, no personal channels — communication is project-scoped only), WORKBENCH (no longer the right shape).
 
 ### 6.5 Cron jobs (three only)
 
-**Morning brief — 07:00 daily.** Cron triggers `apps/orchestrator/src/cron/morning-brief.ts`. Script reads the previous 24 hours of `agent_runs` from Supabase, formats a context block, and invokes the dispatcher with prompt: *"Eleanor, generate the morning brief for Shin: what shipped yesterday, what's blocked, what needs his attention today."* Output writes to a `briefs` table and is rendered on the dashboard COMMAND landing.
+**Morning brief — 07:00 daily.** Cron triggers `apps/orchestrator/src/cron/morning-brief.ts`. Script reads the previous 24 hours of `agent_runs` from Supabase, formats a context block, and invokes the dispatcher with prompt: *"Eleanor, generate the morning brief for Shin: what shipped yesterday, what's blocked, what needs his attention today."* Output writes to a `briefs` table and surfaces as a dismissible banner at the top of every dashboard view (most-recent-first, latest brief on top). Older briefs accessible from the HEALTH view's "recent briefs" panel.
 
 **CEO brief — 09:00 daily.** Same pattern. Different prompt, different audience tilt: *"Eleanor, prepare Shin's CEO brief: company-level decisions only, omit operational detail, surface anything that needs his judgment."*
 
@@ -275,6 +314,26 @@ The Day 28 work-in-progress (`genviral.ts`, `view-image.ts`) is repurposed:
 - **`view-image`** becomes a local tool exposed to subagents that need image input. The tool reads a file path and surfaces the image to the runtime. Whichever subagents need it list it in their frontmatter `tools:`.
 - **`genviral`** becomes an MCP server (`mcp-genviral`) running locally. Subagents that own social-media drafting list `mcp__genviral__*` in their tools.
 - The Supabase `social_drafts` table from migration 0023 stays, since it tracks pending-approval drafts independently of which runtime created them.
+
+### 6.8 Rate hygiene & soft-ban prevention
+
+Subscription auth is sold for human-paced, interactive use. Running 120 agents through it — even strictly serially — is far higher volume than a typical Claude Max user. Without explicit pacing, anomaly-detection systems at Anthropic and OpenAI will flag the account, leading to throttling, increased CAPTCHA challenges, model downgrades, or in the worst case suspension. The dispatcher owns this concern.
+
+**Concrete mitigations enforced by the dispatcher:**
+
+| Mitigation | Detail |
+|---|---|
+| **Single-runtime concurrency** | Only one Claude Code session active at any time. The dispatcher serializes everything — projects, cron jobs, brain updates — through a queue. No parallel sessions, no overlapping calls. |
+| **Inter-call jitter** | 5–30 seconds randomized delay between sequential subagent invocations. Prevents the "machine-gun" pattern that anomaly detectors fire on. |
+| **Burst smoothing on the nightly cron** | Instead of running 120 brain updates back-to-back at 02:00, spread them across the 02:00–04:00 window with random gaps. Roughly one brain update per minute. |
+| **Daily call budget** | Dispatcher tracks total subscription calls per rolling 24h window. Default cap: 500/day on Claude (conservative — Max 20x is believed to handle several thousand but we don't push it). When the budget hits 70%, HEALTH warns; at 85%, dispatcher refuses new project starts (cron jobs still run); at 100%, cron jobs pause too. Resets at midnight local. |
+| **Exponential backoff on errors** | On 429, 5xx, or auth errors: wait `2^n` seconds where `n` is consecutive-failure count. Cap at 5 minutes. **Never retry tighter than 1 second.** Three consecutive failures pause the dispatcher for 30 minutes. |
+| **No retry-storm on auth failure** | If Claude Code session token expired, the dispatcher does NOT auto-retry. It surfaces a "session needs re-auth" notification (push + dashboard banner) and waits for the user. Hammering the auth endpoint is itself a soft-ban accelerant. |
+| **Soft-signal monitoring** | Dispatcher tracks (a) median response latency, (b) frequency of 429s, (c) any model downgrade signals (Claude Code response metadata). When any trends adversely over 24h, HEALTH shows a yellow warning; over 72h, red. User can choose to switch to Codex fallback proactively. |
+| **Human-natural cron timing** | Morning brief at 07:00, CEO brief at 09:00 — these match a real workday. Nightly learning at 02:00–04:00 is unavoidable but we keep it spread, not bursty. |
+| **Single account, no proxying** | One Claude Max account, one ChatGPT Pro account. We do NOT rotate accounts to dodge limits — that's bot-farm behavior and is detection-trigger #1. If we hit caps, we accept the cap. |
+
+**Failure mode: dispatcher gets soft-banned.** Symptoms: latency spike to 30s+ per call, 429s on every request, or persistent CAPTCHA. Response sequence: (1) HEALTH flips red, (2) dispatcher pauses Claude routing for 4 hours, (3) optionally falls through to Codex if user opts in, (4) sends push notification with the symptoms. Manual recovery only — do not auto-resume.
 
 ## 7. Data model (simplified Supabase schema)
 
@@ -309,38 +368,48 @@ The Day 28 work-in-progress (`genviral.ts`, `view-image.ts`) is repurposed:
 |---|---|---|
 | `briefs` | `id`, `kind` (`morning`/`ceo`), `body`, `created_at` | Cron-generated briefs |
 | `cron_runs` | `id`, `cron_kind`, `status` (`ok`/`fail`/`partial`), `started_at`, `finished_at`, `error`, `agents_processed` | Cron observability |
+| `project_messages` | `id`, `project_id`, `sender_type` (`agent`/`user`), `sender_id` (agent_id, nullable for user), `kind` (`prompt`/`handoff`/`output`/`comment`/`final`), `body`, `run_id` (FK to `agent_runs`, nullable for user comments), `parent_message_id` (nullable, for explicit reply-threading), `created_at` | The project chat — central, single thread per project; renders as the chat UI |
+| `project_participants` | `project_id`, `agent_id`, `joined_at`, `joined_via_run_id` (the handoff that pulled them in, nullable for entry agent), unique `(project_id, agent_id)` | Who's in the project chat — accumulates as agents are added via handoff |
+| `rate_budget` | `id`, `provider` (`claude`/`codex`), `window_start` (24h rolling), `calls_used`, `calls_cap` | Soft-ban hygiene; tracks subscription call budget per provider |
 
-Final table count: **7** (agents, agent_runs, projects, artifacts, social_drafts, briefs, cron_runs) — down from ~15.
+Final table count: **10** (agents, agent_runs, projects, artifacts, social_drafts, briefs, cron_runs, project_messages, project_participants, rate_budget) — down from ~15. Note: `dms` is firmly dropped — communication is project-chat-only.
 
 ## 8. Migration plan
 
 A clean cutover, no strangler. The current orchestrator is no longer running anything we care about.
 
 1. **Branch.** `feat/claude-code-rearchitecture`.
-2. **Schema migration.** Write `0024_phase2_simplification.sql` that drops the dead tables, alters surviving tables, and creates `briefs` + `cron_runs`.
-3. **Subagent file pass.** One-time script that walks `.claude/agents/*.md`, looks up each agent's `manager_id` in the existing `agents` table, and appends `# Your manager`, `# Your reports`, and `# Your brain` sections. Adds `Agent` to `tools:` for non-leaf agents.
+2. **Schema migration.** Write `0024_phase2_simplification.sql` that drops the dead tables, alters surviving tables, and creates `briefs`, `cron_runs`, `project_messages`, `project_participants`, `rate_budget`.
+3. **Subagent file pass.** One-time script that walks `.claude/agents/*.md` and rewrites each:
+   - Look up the agent's `manager_id` in the existing `agents` table
+   - Compute the **full sub-tree** under each agent (BFS down through manager_id graph)
+   - Append `# Your manager`, `# Your reports` (full sub-tree, grouped by tier — Director, Manager, Associate, Intern), `# Your brain`, and `# Routing guidance` sections
+   - Add `Agent` to `tools:` for any agent with a non-empty sub-tree (every tier above intern)
+   - **Strip the `model:` field** so subagents inherit the session's default (Opus 4 on Max)
 4. **Brain bootstrap.** For each agent, create `agents/brains/<id>.md` with empty sections. Seed `# Standing patterns` from the existing `learned_addendum` field if non-empty.
-5. **Generate `agents/registry.md`.** Auto-generated from the `agents` table: name, id, department, tier, one-line specialty per agent, organized by department. Eleanor reads this on every invocation.
-6. **Dispatcher.** Build `src/dispatcher.ts` and `POST /api/run` endpoint. Launch a Claude Code session via Claude Agent SDK with Eleanor as the entry subagent. Stream events via SSE.
-7. **Dashboard rebuild.** Replace TODAY/COMPANY/WORKBENCH/MESSAGES with COMMAND/PROJECTS/BRAINS/HEALTH. Wire to new dispatcher endpoint and the simplified schema.
-8. **Cron scripts.** Write the three cron jobs. Configure OS-level scheduler (cron on Linux, Task Scheduler on Windows, or PM2 ecosystem.config).
+5. **Generate `agents/registry.md`.** Auto-generated from the `agents` table: name, id, department, tier, one-line specialty per agent, organized by department and clearly tagged with tier (so smart-routing decisions can match work to level). Eleanor reads this on every invocation.
+6. **Dispatcher.** Build `src/dispatcher.ts` and `POST /api/run` endpoint. Launch a Claude Code session via Claude Agent SDK with Eleanor as the entry subagent. Implement rate hygiene from §6.8 (queue + jitter + backoff + budget tracking). Stream events via SSE. Persist every run as `agent_runs` AND project_message; add new participants to `project_participants` on each handoff.
+7. **Dashboard rebuild.** Replace TODAY/COMPANY/WORKBENCH/MESSAGES with COMMAND/PROJECTS/BRAINS/HEALTH. Wire PROJECTS to the project_chat data model (messages + participants + handoff tree). Wire HEALTH to cron_runs + rate_budget tables.
+8. **Cron scripts.** Write the three cron jobs. Nightly-learning spreads its 120 brain updates across the 02:00–04:00 window (random gaps). Configure OS-level scheduler.
 9. **Delete.** Once dashboard works end-to-end with one project, delete the legacy orchestrator code in a single commit (no half-states).
 10. **Onepark-web pivot.** Separate work; spec-stub in §10.
 
-Estimated build size: **2 weeks of focused work**, not the 3+ months the original Day-28-and-counting roadmap implied.
+Estimated build size: **2–3 weeks of focused work** (the rate-hygiene + project-chat additions push it slightly past the original 2-week estimate).
 
 ## 9. Risks and mitigations
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Anthropic detects automated subscription use → throttling or suspension | **High** | Codex fallback already in design. Keep an Anthropic API key in cold storage as last-resort manual recovery (not used in normal operation). Monitor for soft signals (latency increase, 429s) in HEALTH view. |
-| OpenAI more aggressive → Codex fallback unreliable | Medium | Treat Codex as nice-to-have, not load-bearing. Most projects should run pure Claude. Don't schedule cron jobs through Codex. |
-| Hierarchical routing accuracy: Eleanor picks the wrong department | Medium | Dashboard shows the routing decision; user can redirect. After enough redirects, the brain-keeper learns the correction. |
+| Anthropic detects automated subscription use → soft-ban (throttling, CAPTCHA, model downgrade) or hard suspension | **High** | Full rate hygiene per §6.8: jitter, daily budget, exponential backoff, no auth retry-storms, soft-signal monitoring, single-runtime concurrency. Codex fallback when Claude degrades. Keep an Anthropic API key in cold storage as last-resort manual recovery (NOT used in normal operation). |
+| OpenAI more aggressive → Codex fallback unreliable | Medium | Treat Codex as nice-to-have, not load-bearing. Most projects should run pure Claude. Don't schedule cron jobs through Codex. Same rate hygiene applied to Codex calls. |
+| Hierarchical routing depth-judgment errors: agent over-delegates trivial work to interns who botch it, OR keeps work too high (senior burns time on grunt) | Medium | Dashboard shows every routing decision with the agent's reasoning. User can redirect at any handoff. Each redirect feeds into the redirected agent's nightly brain update so they learn the correction. Routing guidance prompt explicitly emphasizes *competent* not *cheap*. |
+| 5-deep chains (Eleanor→Head→Manager→Associate→Intern) burn 5+ Claude calls per project + bubble-up | High | Encourage skip-levels in routing guidance — *most* projects shouldn't go 5 deep. Track avg-depth per project in HEALTH. Daily budget enforced per §6.8 covers worst case. |
+| Project chat blows up — long projects with many participants and 50+ messages get unwieldy in the UI | Medium | UI has collapsible handoff-tree side-panel for navigation. Older messages collapse with "show N more". Search within project. If a project genuinely needs splitting, manual user action: spawn a child project that links to parent. |
 | Brain docs bloat without curation | Medium | Nightly learning cron does the curation. If skipped for >7 days, HEALTH shows a warning. |
-| Each handoff = one Claude Code call → 4-deep chains burn quota fast | Medium | Track per-day call count in HEALTH. If >70% of weekly Max quota by Friday, throttle to project-only (skip cron). |
-| Subscription auth tokens expire mid-cron at 02:00 | Low–Medium | Cron script catches auth errors, re-prompts to log in via push notification (existing pattern). |
-| Claude Code subagent crashes lose context mid-handoff | Low | Dispatcher persists `agent_runs` row before each subagent call; on crash, can resume from the last completed handoff. |
-| Cross-runtime handoff (Claude → Codex) loses context | Medium | Don't do mid-project runtime switches. If one runtime fails, retry the whole project on the other. |
+| Subscription auth tokens expire mid-cron at 02:00 | Low–Medium | Cron script catches auth errors, surfaces via push notification, does NOT retry. User re-auths next morning. |
+| Claude Code subagent crashes lose context mid-handoff | Low | Dispatcher persists `agent_runs` row + `project_message` before each subagent call; on crash, can resume from the last completed handoff. |
+| Cross-runtime handoff (Claude → Codex) loses context | Medium | Don't do mid-project runtime switches. If one runtime fails, retry the whole project on the other from scratch. |
+| Stripping `model:` from frontmatters means Claude Code's default is unclear — what if it's still sonnet? | Low | Verify on first session that the dispatcher reports Opus as the active model. If CC defaults to Sonnet on Max, set `model: opus` explicitly in frontmatters as a fallback. Tested in step 6 of migration. |
 
 ## 10. Marketing site pivot (`onepark-web`) — sketch only
 
@@ -364,6 +433,8 @@ A separate spec will detail this pivot; this spec just commits the direction.
 - Billing or usage attribution. No customer-facing metering.
 - Automatic brain merging across agents. Each agent owns their own brain; no cross-pollination.
 - Replacing Claude Code's subagent feature with our own. We use it as-is.
+- **Inter-agent direct messaging or personal channels.** All communication is project-scoped. No DMs, no agent-to-agent private chat, no broadcast channels.
+- **Parallel project execution.** One Claude Code session at a time. If five projects are queued, they run in order. This is also a soft-ban-prevention requirement (§6.8).
 
 ## 12. Open TBDs
 
