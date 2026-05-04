@@ -140,6 +140,10 @@ export const KNOWN_TOOL_NAMES = [
     "browser_fetch_text",
     "browser_extract_links",
     "browser_screenshot",
+    "genviral_list_accounts",
+    "genviral_create_draft",
+    "genviral_check_status",
+    "view_image",
 ];
 // ============================================================================
 // CHANNELS (canonical list)

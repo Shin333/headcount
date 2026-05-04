@@ -18,4 +18,6 @@ export const config = {
   reflectionWallIntervalHours: env.REFLECTION_WALL_INTERVAL_HOURS,
   chatterEnabled: env.CHATTER_ENABLED,
   credEncryptionKey: env.CRED_ENCRYPTION_KEY,
+  genviralApiKey: env.GENVIRAL_API_KEY,
+  supabaseStorageBucket: env.SUPABASE_STORAGE_BUCKET,
 } as const;

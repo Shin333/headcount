@@ -5,6 +5,8 @@ import { db } from "../db.js";
 import { anthropic, MODEL_MAP } from "../claude.js";
 import { config } from "../config.js";
 import { composeSystemPrompt } from "./personality.js";
+import { getRosterContext } from "./roster-context.js";
+import { buildRecentWorkContext } from "./recent-work.js";
 import { retrieveMemories } from "./memory.js";
 import type { Tool, ToolResult, ToolExecutionContext } from "../tools/types.js";
 import type { ImageBlock } from "./vision.js";
@@ -326,10 +328,21 @@ async function runAgentTurnSingleCall(args: {
     };
   }
 
-  // Memory retrieval (Day 1 stub)
+  // Memory retrieval (Day 1 stub — kept for backward compat, returns [])
   await retrieveMemories(agent.id, trigger, { topK: 12 });
 
-  const systemPromptText = composeSystemPrompt(agent, contextBlock);
+  // Day 29: inject the full company roster + the agent's recent work into
+  // every system prompt. Roster stops "X doesn't exist" claims; recent work
+  // stops duplicate-artifact production.
+  const [rosterBlock, recentWorkBlock] = await Promise.all([
+    getRosterContext(),
+    buildRecentWorkContext(agent.id),
+  ]);
+
+  const systemPromptText = composeSystemPrompt(agent, contextBlock, {
+    rosterBlock,
+    recentWorkBlock,
+  });
   const tier = forceTier ?? agent.model_tier;
   const model = MODEL_MAP[tier];
 
@@ -487,7 +500,16 @@ async function runAgentTurnWithTools(args: {
 
   await retrieveMemories(agent.id, trigger, { topK: 12 });
 
-  const systemPromptText = composeSystemPrompt(agent, contextBlock);
+  // Day 29: roster + recent-work context (same as single-call path)
+  const [rosterBlock, recentWorkBlock] = await Promise.all([
+    getRosterContext(),
+    buildRecentWorkContext(agent.id),
+  ]);
+
+  const systemPromptText = composeSystemPrompt(agent, contextBlock, {
+    rosterBlock,
+    recentWorkBlock,
+  });
   const tier = forceTier ?? agent.model_tier;
   const model = MODEL_MAP[tier];
   const apiTools = toolsToApiFormat(tools);
@@ -748,10 +770,23 @@ async function runAgentTurnWithTools(args: {
       content: response.content,
     });
 
+    // Day 28: tool_result content can be a plain string OR an array of
+    // content blocks (text + image). view_image returns imageBlocks so the
+    // agent "sees" the image on the next round; the content stays a string
+    // for normal tools.
+    type ToolResultContent =
+      | string
+      | Array<
+          | { type: "text"; text: string }
+          | {
+              type: "image";
+              source: { type: "base64"; media_type: "image/png" | "image/jpeg" | "image/webp"; data: string };
+            }
+        >;
     const toolResultBlocks: Array<{
       type: "tool_result";
       tool_use_id: string;
-      content: string;
+      content: ToolResultContent;
       is_error: boolean;
     }> = [];
 
@@ -846,12 +881,30 @@ async function runAgentTurnWithTools(args: {
         },
       });
 
-      toolResultBlocks.push({
-        type: "tool_result",
-        tool_use_id: toolUse.id,
-        content: result.content,
-        is_error: result.isError,
-      });
+      // Day 28: if the tool returned imageBlocks (view_image et al), emit a
+      // rich tool_result whose content is an array of text + image blocks.
+      // Anthropic accepts this shape and the agent will literally see the
+      // image on the next round. Otherwise fall back to the plain string
+      // content path.
+      if (result.imageBlocks && result.imageBlocks.length > 0 && !result.isError) {
+        const richContent: ToolResultContent = [
+          { type: "text", text: result.content },
+          ...result.imageBlocks,
+        ];
+        toolResultBlocks.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: richContent,
+          is_error: false,
+        });
+      } else {
+        toolResultBlocks.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: result.content,
+          is_error: result.isError,
+        });
+      }
     }
 
     if (toolExecutionTrace.length > 0) {

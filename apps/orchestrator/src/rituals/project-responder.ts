@@ -43,8 +43,50 @@ const CEO_SENTINEL_ID = "00000000-0000-0000-0000-00000000ce00";
 // runaway cost if a project has 20+ members.
 const MAX_RESPONDERS_PER_MESSAGE = 5;
 
+// Day 29: hard cap on per-agent-per-project channel posts per UTC day.
+// Kills coordination-theatre spirals while leaving room for editorial
+// leads and platform specialists to actually work. Initial cap of 3 proved
+// too tight — legitimate leads like Tessa (editorial) and Kavitha (IG)
+// need 5-8 posts a day. Bumped to per-tier:
+//   - exec / director:  10/day  (CoS, CMO, CFO run lots of traffic)
+//   - manager:           6/day  (platform leads, ICs)
+//   - associate / lower: 4/day
+const POSTS_CAP_BY_TIER: Record<string, number> = {
+  exec: 10,
+  director: 10,
+  manager: 6,
+  associate: 4,
+  intern: 3,
+  bot: 3,
+};
+function maxPostsForTier(tier: string): number {
+  return POSTS_CAP_BY_TIER[tier] ?? 4;
+}
+
 // Haiku model for the cheap pre-filter
 const PREFILTER_MODEL = "claude-haiku-4-5-20251001";
+
+/**
+ * Day 29: count this agent's channel posts to this project today (UTC).
+ * Excludes system messages + artifact auto-posts — only real agent
+ * "message" type posts count against the cap.
+ */
+async function countAgentPostsToday(agentId: string, projectId: string): Promise<number> {
+  const startOfDay = new Date();
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const { count, error } = await db
+    .from("project_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("project_id", projectId)
+    .eq("agent_id", agentId)
+    .eq("message_type", "message")
+    .gte("created_at", startOfDay.toISOString());
+  if (error) {
+    console.warn(`[project-responder] post-count query failed: ${error.message}`);
+    return 0;
+  }
+  return count ?? 0;
+}
 
 // Mutex to prevent concurrent project-responder runs
 let projectResponderRunning = false;
@@ -155,6 +197,18 @@ async function processProjectMessage(
     // Budget check per agent
     if (agent.tokens_used_today >= agent.daily_token_budget) continue;
 
+    // Day 29: per-agent per-project per-day channel-post cap. Cap scales
+    // with tier so editorial leads + platform owners aren't punished for
+    // legitimate throughput.
+    const postsToday = await countAgentPostsToday(agent.id, projectId);
+    const cap = maxPostsForTier(agent.tier);
+    if (postsToday >= cap) {
+      console.log(
+        `[project-responder] ${agent.name} hit daily post cap (${postsToday}/${cap}, tier=${agent.tier}) on "${project.title}" — silent`
+      );
+      continue;
+    }
+
     const shouldRespond = await runPreFilter(
       agent,
       project.title,
@@ -260,7 +314,12 @@ async function runPreFilter(
 From: ${senderName}
 "${truncatedBody}"
 
-Should you respond to this message? Consider: does it directly affect YOUR work, does it ask you a question, does it require your expertise, or does it change something you're responsible for?
+SILENCE IS THE DEFAULT. The right answer is NO unless ONE of these is clearly true:
+  - You are explicitly tagged or addressed by name in this message
+  - There is a direct question that only YOUR domain can answer
+  - It announces a BLOCKER or DECISION that changes what you must do next
+  - A commitment YOU own is explicitly called out or contradicted
+Answer NO for: status updates, other people's artifacts, acknowledgments, "nice work"-style reactions, general FYIs, meta-coordination talk, offers of help that weren't requested. These are coordination theatre and make the channel worse.
 
 Answer only YES or NO. Nothing else.`,
         },

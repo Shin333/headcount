@@ -53,6 +53,21 @@ export interface ToolResult {
    * outgoing DM/post for dashboard rendering.
    */
   structuredPayload?: Record<string, unknown>;
+  /**
+   * Day 28: when a tool (view_image, browser_screenshot with inline mode)
+   * produces images the agent should "see", it returns them here. The runner
+   * unpacks these into the `content` field of the tool_result block as
+   * Anthropic-compatible image content, so the agent can use vision on the
+   * next round. Must be well-formed base64 ImageBlocks (see agents/vision.ts).
+   */
+  imageBlocks?: Array<{
+    type: "image";
+    source: {
+      type: "base64";
+      media_type: "image/png" | "image/jpeg" | "image/webp";
+      data: string;
+    };
+  }>;
 }
 
 /**

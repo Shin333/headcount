@@ -34,6 +34,24 @@ const ServerEnvSchema = z.object({
     // Day 13: Google Gemini API key for nanobanana image generation (optional -
     // image_generate tool returns a friendly error if missing, doesn't crash).
     GEMINI_API_KEY: z.string().min(1).optional(),
+    // Day 27 (Option B Session 2): symmetric key for AES-256-GCM encryption of
+    // agent_credentials.access_token / refresh_token. Must be 32 bytes,
+    // base64-encoded (44 characters with padding). Generate one with:
+    //   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+    // Optional: if absent, the code paths that write/read credentials degrade
+    // to plaintext (with a startup warning) so existing tokens keep working
+    // while you set up the key.
+    CRED_ENCRYPTION_KEY: z.string().min(1).optional(),
+    // Day 28: Genviral API key for cross-platform social-media draft posting
+    // (https://docs.genviral.io/api-reference/introduction). Format:
+    //   gva_live_<public_id>.<secret>
+    // Optional — when missing, the Genviral tools return a friendly error
+    // instead of crashing so the rest of the orchestrator keeps running.
+    GENVIRAL_API_KEY: z.string().min(1).optional(),
+    // Supabase Storage bucket for social-media draft images. Must be public-
+    // read (Genviral fetches the URLs without auth). Default matches the
+    // bucket name we ask the operator to create in the handoff doc.
+    SUPABASE_STORAGE_BUCKET: z.string().min(1).default("nocodeships-drafts"),
 });
 export function loadServerEnv() {
     const parsed = ServerEnvSchema.safeParse(process.env);

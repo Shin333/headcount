@@ -15,6 +15,9 @@ declare const ServerEnvSchema: z.ZodObject<{
     CHATTER_ENABLED: z.ZodDefault<z.ZodBoolean>;
     TAVILY_API_KEY: z.ZodOptional<z.ZodString>;
     GEMINI_API_KEY: z.ZodOptional<z.ZodString>;
+    CRED_ENCRYPTION_KEY: z.ZodOptional<z.ZodString>;
+    GENVIRAL_API_KEY: z.ZodOptional<z.ZodString>;
+    SUPABASE_STORAGE_BUCKET: z.ZodDefault<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     SUPABASE_URL: string;
     SUPABASE_SERVICE_ROLE_KEY: string;
@@ -29,8 +32,11 @@ declare const ServerEnvSchema: z.ZodObject<{
     CHATTER_POSTS_PER_AGENT_PER_DAY: number;
     REFLECTION_WALL_INTERVAL_HOURS: number;
     CHATTER_ENABLED: boolean;
+    SUPABASE_STORAGE_BUCKET: string;
     TAVILY_API_KEY?: string | undefined;
     GEMINI_API_KEY?: string | undefined;
+    CRED_ENCRYPTION_KEY?: string | undefined;
+    GENVIRAL_API_KEY?: string | undefined;
 }, {
     SUPABASE_URL: string;
     SUPABASE_SERVICE_ROLE_KEY: string;
@@ -47,6 +53,9 @@ declare const ServerEnvSchema: z.ZodObject<{
     CHATTER_ENABLED?: boolean | undefined;
     TAVILY_API_KEY?: string | undefined;
     GEMINI_API_KEY?: string | undefined;
+    CRED_ENCRYPTION_KEY?: string | undefined;
+    GENVIRAL_API_KEY?: string | undefined;
+    SUPABASE_STORAGE_BUCKET?: string | undefined;
 }>;
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;
 export declare function loadServerEnv(): ServerEnv;

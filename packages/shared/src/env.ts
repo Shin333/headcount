@@ -43,6 +43,16 @@ const ServerEnvSchema = z.object({
   // to plaintext (with a startup warning) so existing tokens keep working
   // while you set up the key.
   CRED_ENCRYPTION_KEY: z.string().min(1).optional(),
+  // Day 28: Genviral API key for cross-platform social-media draft posting
+  // (https://docs.genviral.io/api-reference/introduction). Format:
+  //   gva_live_<public_id>.<secret>
+  // Optional — when missing, the Genviral tools return a friendly error
+  // instead of crashing so the rest of the orchestrator keeps running.
+  GENVIRAL_API_KEY: z.string().min(1).optional(),
+  // Supabase Storage bucket for social-media draft images. Must be public-
+  // read (Genviral fetches the URLs without auth). Default matches the
+  // bucket name we ask the operator to create in the handoff doc.
+  SUPABASE_STORAGE_BUCKET: z.string().min(1).default("nocodeships-drafts"),
 });
 
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;

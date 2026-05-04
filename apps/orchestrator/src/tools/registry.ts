@@ -17,6 +17,12 @@ import {
   browserExtractLinksTool,
   browserScreenshotTool,
 } from "./browser.js";
+import {
+  genviralListAccountsTool,
+  genviralCreateDraftTool,
+  genviralCheckStatusTool,
+} from "./genviral.js";
+import { viewImageTool } from "./view-image.js";
 
 // ----------------------------------------------------------------------------
 // tools/registry.ts - the tool catalog
@@ -50,6 +56,10 @@ const TOOL_REGISTRY: Record<string, Tool> = {
   browser_fetch_text: browserFetchTextTool,
   browser_extract_links: browserExtractLinksTool,
   browser_screenshot: browserScreenshotTool,
+  genviral_list_accounts: genviralListAccountsTool,
+  genviral_create_draft: genviralCreateDraftTool,
+  genviral_check_status: genviralCheckStatusTool,
+  view_image: viewImageTool,
 };
 
 /**

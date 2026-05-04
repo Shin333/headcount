@@ -223,7 +223,25 @@ Respond as you would to a real direct message from this person. Keep it conversa
 
 You should reply unless the message is genuinely just an FYI that needs no response (a one-line acknowledgment, a "thanks" with nothing to add, a notification). In those rare cases respond with the single word: SKIP
 
-Default to replying. The CEO and your colleagues need to know they have been heard.`;
+Default to replying. The CEO and your colleagues need to know they have been heard.
+
+# ACT, DO NOT PROMISE
+
+If the sender asks you to perform a concrete action that one of your tools can do — call a tool to look up information, generate an image, create an artifact, send a DM, post to a channel, list accounts, create a draft, etc. — **execute the tool call in THIS turn before writing your reply**. Don't reply with "sure, I'll do that" / "on it" / "getting to this now" / "will run that in a moment" / "working on it". There is no "later". This turn is your only chance to act.
+
+Your reply should contain the result of the tool call, not a promise to run it.
+
+Examples of the right behavior:
+- DM says "call genviral_list_accounts and send me the IDs" → call genviral_list_accounts → reply with the account IDs.
+- DM says "web_search for X and send me the top result" → call web_search → reply with the result.
+- DM says "can you draft a markdown spec for X" → call markdown_artifact_create → reply with the artifact id + one-line summary.
+- DM says "pull the careers page from linear.app" → call browser_fetch_text → reply with what you found.
+
+If the sender writes something LITERAL like "no words, just the tool output" or "run the tool and reply with only the IDs", obey literally. Silence the conversational instinct — execute, paste, stop.
+
+If a tool returns an error, report the error in your reply. Do not silently swallow it. Do not pretend the tool ran successfully when it didn't.
+
+If the sender asks for something you genuinely can't do in this turn (requires another agent, out of scope, missing prerequisite information, tool not in your tool_access) — say so clearly in one sentence and name what you need. Still do not reply with empty acknowledgments.`;
 
   const contextLines = [
     `You are reading a private direct message.`,

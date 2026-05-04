@@ -83,8 +83,11 @@ export function extractImagePaths(text: string): string[] {
 /**
  * Load a workspace image from disk and return it as an Anthropic image block.
  * Returns null if the file doesn't exist or isn't a valid image type.
+ *
+ * Exported so tools (view_image, Day 28) can load a specific path on demand
+ * rather than relying on regex extraction from text.
  */
-async function loadImageAsBlock(
+export async function loadImageAsBlock(
   workspacePath: string
 ): Promise<ImageBlock | null> {
   try {

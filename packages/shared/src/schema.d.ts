@@ -332,7 +332,7 @@ export declare const PromptEvolutionEntrySchema: z.ZodObject<{
 export type PromptEvolutionEntry = z.infer<typeof PromptEvolutionEntrySchema>;
 export declare const KNOWN_MCP_SERVERS: readonly ["alai"];
 export type KnownMcpServer = (typeof KNOWN_MCP_SERVERS)[number];
-export declare const KNOWN_TOOL_NAMES: readonly ["web_search", "code_artifact_create", "markdown_artifact_create", "calendar_read", "image_generate", "dm_send", "roster_lookup", "project_create", "project_post", "commitment_create", "imagen_generate", "read_artifact", "project_complete", "code_execution", "browser_fetch_text", "browser_extract_links", "browser_screenshot"];
+export declare const KNOWN_TOOL_NAMES: readonly ["web_search", "code_artifact_create", "markdown_artifact_create", "calendar_read", "image_generate", "dm_send", "roster_lookup", "project_create", "project_post", "commitment_create", "imagen_generate", "read_artifact", "project_complete", "code_execution", "browser_fetch_text", "browser_extract_links", "browser_screenshot", "genviral_list_accounts", "genviral_create_draft", "genviral_check_status", "view_image"];
 export type KnownToolName = (typeof KNOWN_TOOL_NAMES)[number];
 export declare const Channels: {
     readonly ANNOUNCEMENTS: "announcements";
