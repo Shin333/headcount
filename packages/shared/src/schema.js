@@ -1,3 +1,22 @@
+/**
+ * NOTICE: This file is stale relative to migrations 0024 + 0025 (May 2026).
+ *
+ * The AgentSchema here still references columns dropped in 0024 — including
+ * `personality`, `frozen_core`, `manager_overlay`, `learned_addendum`,
+ * `allowed_tools`, `model_tier`, `daily_token_budget`, `tokens_used_today`.
+ * Tables added in 0024 (`briefs`, `cron_runs`, `rate_budget`, `social_drafts`)
+ * and the renamed `project_participants` are not represented here.
+ *
+ * Do NOT trust `.parse()` against current DB rows for agents-related tables
+ * without first verifying which columns the row actually has.
+ *
+ * Code that touches these tables should define local Zod schemas covering
+ * only the columns it reads — do NOT import the stale schemas from this
+ * file — until Phase 2 ships a clean rewrite.
+ *
+ * Full rewrite is scheduled for Phase 2 (dispatcher), where the new
+ * consumers determine the exact shape needed.
+ */
 import { z } from "zod";
 // ============================================================================
 // AGENT
