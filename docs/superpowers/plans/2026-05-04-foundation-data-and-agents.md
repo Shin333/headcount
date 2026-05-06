@@ -551,14 +551,23 @@ cd /d/Projects/headcount/apps/orchestrator
 pnpm exec tsx src/migrations/foundation/migrate-agents.ts --dry-run
 ```
 
-Expected (numbers depend on your data):
+Expected output (counts shift with the live DB; verify against the recon baseline rather than memorizing):
+
 ```
 mode: DRY-RUN
 loaded 120 agents from DB
-  Eleanor Vance (exec) — 5 direct, 119 total subtree
+  Eleanor Vance (exec) — 0 direct, 0 subtree
+  Tsai Wei-Ming (exec) — ~N direct, ~N total subtree
+  Tessa Goh (exec) — ~N direct, ~N total subtree
+  ...
+  Shin Park (exec) — ~N direct, ~N total subtree
 ```
 
-If the subtree count is 0, the manager_id graph isn't populated. Run this query in Supabase SQL editor: `select count(*) from agents where manager_id is not null and status='active';` — should be ~119 (everyone except Eleanor).
+The script iterates all 10 exec-tier agents and prints one line per agent. Specific notes:
+
+- **Eleanor Vance: `0 direct, 0 subtree` is correct, not a bug.** Per spec §5.2.1 (org chart vs routing graph), Eleanor's routing capability comes from `agents/registry.md` (Task 4.1), not from her `manager_id` subtree. She is a peer of department heads under Shin in the org chart, not their manager.
+- **Other exec-tier agents (Tsai, Tessa, Bradley, etc.) should print `N direct` matching their direct-reports count and `N subtree` matching their full BFS subtree size.** Verify each printed value against the recon baseline; if any value is wildly off, the manager_id graph or `.eq('status', 'active')` filter is the likely cause.
+- **If every printed line shows `0 direct, 0 subtree`** (not just Eleanor's), the manager_id graph is unpopulated. Check `select count(*) from agents where manager_id is not null and status='active';` — expected ~119 (everyone except Shin, who is the root).
 
 ### Task 2.3: Add the `.md` parser
 
