@@ -335,44 +335,40 @@ Subscription auth is sold for human-paced, interactive use. Running 120 agents t
 
 **Failure mode: dispatcher gets soft-banned.** Symptoms: latency spike to 30s+ per call, 429s on every request, or persistent CAPTCHA. Response sequence: (1) HEALTH flips red, (2) dispatcher pauses Claude routing for 4 hours, (3) optionally falls through to Codex if user opts in, (4) sends push notification with the symptoms. Manual recovery only — do not auto-resume.
 
-## 7. Data model (simplified Supabase schema)
+## 7. Data model — final schema (13 tables)
 
-**Tables to keep (with edits):**
+After migrations `0024` and `0025`, the final schema is **13 tables**: a Core 10 plus 3 preserved with explicit rationale.
 
-| Table | Edits | Purpose |
-|---|---|---|
-| `agents` | Drop `daily_token_budget`, `tokens_used_today`, `chatter_posts_today`, `last_reset_company_date`, `last_reflection_at`, `addendum_loop_active`, `manager_overlay`, `learned_addendum`. Personality content lives in `.claude/agents/<id>.md` from now on. Keep `id`, `name`, `role`, `department`, `tier`, `manager_id`, `reports_to_ceo`, `status`. | Org chart, dashboard rendering |
-| `agent_runs` (renamed from `agent_actions`) | Drop `input_tokens`, `output_tokens`, `system_prompt`, `user_prompt`. Add `runtime` (`claude_code` / `codex`), `parent_run_id` (handoff parent), `project_id`. | Runs + handoff tree |
-| `tickets` | Renamed `projects`. Drop fields no longer used. | User-issued projects |
-| `artifacts` | Keep | Final outputs of runs |
-| `social_drafts` | Keep | Genviral integration (Day 28) |
+### Core 10
 
-**Tables to drop:**
+The architecture's central tables. Created or altered by `0024_phase2_simplification.sql`.
 
-| Table | Reason |
+| Table | Notes |
 |---|---|
-| `forum_posts` | No more inter-agent chatter |
-| `dms` | No more inter-agent DMs |
-| `memories` | Replaced by brain markdown files |
-| `relationships` | No social/sentiment tracking |
-| `world_clock` | No fictional company time |
-| `standups` | Replaced by morning/ceo briefs |
-| `wall_token_spend` | No per-token metering |
-| `ritual_state` | Cron jobs use OS scheduler, no DB state |
-| `cost_alerts` | No API spend |
-| `prompt_evolution_log` | Brain docs in git replace this |
+| `agents` | Org chart. Personality content moved to `.claude/agents/<id>.md`; legacy columns dropped (`daily_token_budget`, `tokens_used_today`, `chatter_posts_today`, `last_reset_company_date`, `last_reflection_at`, `addendum_loop_active`, `manager_overlay`, `learned_addendum`, `personality`, `background`, `allowed_tools`, `model_tier`, `frozen_core`, `tool_access`, `always_on`, `in_standup`, `mcp_access`). |
+| `agent_runs` | Renamed from `agent_actions`. Drops API-metering (`input_tokens`, `output_tokens`, `system_prompt`, `user_prompt`); adds `runtime`, `parent_run_id`, `project_id` to support the handoff tree. |
+| `projects` | User-issued projects. Existed pre-0024; altered in place — added `entry_agent_id`, `prompt`. |
+| `project_messages` | The project chat, single thread per project. Existed pre-0024 with 1732 rows preserved; altered + backfilled in place. Columns: `id`, `project_id`, `sender_type` (`agent`/`user`), `sender_id`, `kind` (`prompt`/`handoff`/`output`/`comment`/`final`), `body`, `run_id`, `parent_message_id`, `created_at`. |
+| `project_participants` | Who's in the project chat. Renamed from `project_members`; 24 rows preserved. Adds `joined_via_run_id`. |
+| `artifacts` | Final outputs of runs. Unchanged. |
+| `social_drafts` | Genviral integration (Day 28). Created in `0024` (the original `0023` was never applied to dev DB). |
+| `briefs` | Morning + CEO brief output (`kind`, `body`, `created_at`, `dismissed`). New in `0024`. |
+| `cron_runs` | Cron-job observability (`cron_kind`, `status`, timing, error, `agents_processed`). New in `0024`. |
+| `rate_budget` | Soft-ban hygiene — tracks subscription calls per provider per 24h window. New in `0024`. |
 
-**New tables:**
+### Preserved 3 (with explicit rationale)
 
-| Table | Fields | Purpose |
-|---|---|---|
-| `briefs` | `id`, `kind` (`morning`/`ceo`), `body`, `created_at` | Cron-generated briefs |
-| `cron_runs` | `id`, `cron_kind`, `status` (`ok`/`fail`/`partial`), `started_at`, `finished_at`, `error`, `agents_processed` | Cron observability |
-| `project_messages` | `id`, `project_id`, `sender_type` (`agent`/`user`), `sender_id` (agent_id, nullable for user), `kind` (`prompt`/`handoff`/`output`/`comment`/`final`), `body`, `run_id` (FK to `agent_runs`, nullable for user comments), `parent_message_id` (nullable, for explicit reply-threading), `created_at` | The project chat — central, single thread per project; renders as the chat UI |
-| `project_participants` | `project_id`, `agent_id`, `joined_at`, `joined_via_run_id` (the handoff that pulled them in, nullable for entry agent), unique `(project_id, agent_id)` | Who's in the project chat — accumulates as agents are added via handoff |
-| `rate_budget` | `id`, `provider` (`claude`/`codex`), `window_start` (24h rolling), `calls_used`, `calls_cap` | Soft-ban hygiene; tracks subscription call budget per provider |
+These tables existed before `0024` and were intentionally kept after a live-DB audit. Each is justified individually:
 
-Final table count: **10** (agents, agent_runs, projects, artifacts, social_drafts, briefs, cron_runs, project_messages, project_participants, rate_budget) — down from ~15. Note: `dms` is firmly dropped — communication is project-chat-only.
+- **`agent_credentials`** — encrypted OAuth tokens for MCP servers requiring third-party auth. FK: `agent_credentials.agent_id → agents.id`. Load-bearing for any tool calling an authenticated external API.
+- **`real_action_audit`** — append-only log of side-effecting tool calls (arguments, result, success/error, duration). **Phase 2 dispatcher writes to this table** for compliance and post-hoc debugging. Schema unchanged from prior architecture.
+- **`departments`** — 12-row org-structure lookup, FK-locked by `agents.department → departments.slug`. Read by dashboard's `by-department` route. **Provisional**: re-evaluate during Phase 3 dashboard rebuild — droppable if the new dashboard reads `agents/registry.md` directly and the FK on `agents.department` is removed.
+
+### Tables dropped
+
+`forum_posts`, `dms`, `memories`, `relationships`, `world_clock`, `standups`, `wall_token_spend`, `ritual_state`, `cost_alerts`, `prompt_evolution_log`, `commitments`, `reports`, `report_runs`, `reflection_triggers`, `tickets` (in `0024`); `tool_result_cache` (in `0025`).
+
+Note: `dms` is firmly dropped — communication is project-chat-only.
 
 ## 8. Migration plan
 
