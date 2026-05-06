@@ -717,7 +717,10 @@ function transformAgent(
       ""
     );
 
+    // Tier buckets: render exec → director → manager → associate → intern.
+    // `bot` (Uncle Tan) is intentionally NOT rendered — they are not delegation targets.
     const byTier: Record<string, OrgNode[]> = {
+      exec: [],
       director: [],
       manager: [],
       associate: [],
@@ -727,7 +730,9 @@ function transformAgent(
     for (const r of node.subtree) {
       (byTier[r.agent.tier] ?? byTier.bot).push(r);
     }
-    for (const tier of ["director", "manager", "associate", "intern"]) {
+    // Includes 'exec' so Shin Park's # Your reports section renders his 17 exec-tier reports.
+    // Without exec in the loop, root-level agents render an empty subtree.
+    for (const tier of ["exec", "director", "manager", "associate", "intern"]) {
       const list = byTier[tier];
       if (!list?.length) continue;
       sections.push(`## ${tier[0].toUpperCase()}${tier.slice(1)}s`, "");
@@ -769,13 +774,24 @@ function transformAgent(
     );
   }
 
+  // Strip the legacy export-claude-agents.ts trailer if present. The trailer
+  // is `---` followed by `<!-- Exported from Headcount on <date>... -->`, sometimes
+  // with surrounding whitespace. Removing it before appending keeps the file clean
+  // and prevents accidental round-trip if the export script reappears.
+  const TRAILER_RE = /\n---\s*\n<!--\s*Exported from Headcount[\s\S]*?-->\s*$/;
+  const cleanBody = file.body.replace(TRAILER_RE, "");
+
   return {
     path: file.path,
     frontmatter: fm,
-    body: file.body.trimEnd() + "\n" + sections.join("\n"),
+    body: cleanBody.trimEnd() + "\n" + sections.join("\n"),
   };
 }
 ```
+
+**Note on tier handling.** The tier loop deliberately includes `exec` so root-level agents (Shin Park, with 17 exec-tier reports) render a complete `# Your reports` section. The `bot` tier is excluded from rendering because the only `bot` (Uncle Tan, watercooler bot) is not a valid delegation target. The `byTier.bot` bucket is kept solely so the `bot` tier doesn't fall through into another bucket.
+
+**Note on trailer stripping.** The transform strips the `<!-- Exported from Headcount... -->` trailer from each file before appending the migration sections. Once Task 1.4 deletes the export script, this is belt-and-suspenders — but it also makes the migrated files structurally cleaner regardless.
 
 - [ ] **Step 2: Hook the transform into a single-file dry-run**
 
