@@ -305,6 +305,58 @@ If `forum_posts`, `dms`, `memories`, `relationships`, `world_clock`, `standups`,
 
 **Expected outcome.** File deleted. Grep returns zero hits in source. Typecheck output unchanged from baseline. The trailer comments left behind in each `.md` file become stale text — Task 2.4's transform will strip them.
 
+### Task 1.5: Pre-flight `.claude/agents/` file cleanup
+
+**Status:** TO DO. Blocking — must complete before Task 2.5 runs.
+
+**Reason.** A May 2026 recon found two file-set ↔ DB-set mismatches that cause migrate-agents to throw on two files and silently miss two active agents:
+
+1. **`.claude/agents/eleanor-marsh.md`** belongs to an agent whose active DB row is named `Elena Marsh`. The export script never caught up to the rename. Without cleanup, `migrate-agents.ts` throws `no DB row matches agent slug "eleanor-marsh"`, and the active `elena-marsh` agent is silently never processed (the script iterates over `.md` files, not over DB rows).
+2. **`.claude/agents/sean-de-souza.md`** belongs to a `terminated` agent. The org-chart query filters `status='active'`, so Sean has no node in the loaded org map. Without cleanup, the script throws on this file too.
+
+After cleanup, all 119 remaining `.md` files match an active DB row except Shin Park, who has no `.md` by design — he is the human user, not a Claude Code subagent.
+
+**Actions.**
+
+- [ ] **Step 1: Rename the Eleanor → Elena file.**
+
+  ```bash
+  cd /d/Projects/headcount
+  git mv .claude/agents/eleanor-marsh.md .claude/agents/elena-marsh.md
+  ```
+
+- [ ] **Step 2: Update the frontmatter `name:` field.**
+
+  Open `.claude/agents/elena-marsh.md`. Change the frontmatter line `name: eleanor-marsh` to `name: elena-marsh`. Leave every other frontmatter field intact.
+
+- [ ] **Step 3: Update prose references in the body.**
+
+  Replace the full name `Eleanor Marsh` with `Elena Marsh` everywhere it appears in the body. For standalone `Eleanor` references (without `Marsh` adjacent), inspect each match manually — standalone `Eleanor` may refer to Eleanor Vance (Chief of Staff), a peer agent, and should NOT be renamed. Standalone `Marsh` references can be left as-is (last name is unchanged). The export-trailer comment will be stripped by Task 2.4; no action needed here.
+
+- [ ] **Step 4: Delete the terminated agent's file.**
+
+  ```bash
+  git rm .claude/agents/sean-de-souza.md
+  ```
+
+- [ ] **Step 5: Verify the resulting set.**
+
+  ```bash
+  ls .claude/agents/*.md | wc -l       # expected: 119
+  ls .claude/agents/elena-marsh.md     # expected: file exists
+  ls .claude/agents/eleanor-marsh.md   # expected: error, no such file
+  ls .claude/agents/sean-de-souza.md   # expected: error, no such file
+  grep "^name:" .claude/agents/elena-marsh.md  # expected: name: elena-marsh
+  ```
+
+- [ ] **Step 6: Commit.**
+
+  ```bash
+  git commit -m "chore(agents): rename eleanor-marsh→elena-marsh, drop sean-de-souza (terminated)"
+  ```
+
+**Expected outcome.** 119 `.md` files in `.claude/agents/`. Each maps 1:1 to an active DB agent except Shin Park (no file by design). `migrate-agents.ts` will process exactly 119 files with zero "no DB row matches" errors.
+
 ---
 
 ## Phase 2: Subagent file rewrite script
