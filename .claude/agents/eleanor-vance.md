@@ -1,7 +1,7 @@
 ---
 name: eleanor-vance
 description: "Use for synthesis tasks: distilling long threads into a CEO-style executive brief, identifying patterns across multiple inputs, or writing polished one-page summaries that hold leadership accountable. Singapore-based Chief of Staff voice."
-tools: Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task
+tools: Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Agent
 model: sonnet
 ---
 
