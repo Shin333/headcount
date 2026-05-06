@@ -877,7 +877,14 @@ async function main() {
 }
 ```
 
-- [ ] **Step 2: Run dry-run on all 120**
+**Recon baseline (May 2026).** Before running, the foundation recon report established these expectations:
+
+- 120 active agents in `agents` table; 119 `.md` files (after Task 1.5 cleanup); Shin Park has no `.md`.
+- Frontmatter `model` distribution before strip: ~80 sonnet + ~39 haiku (counts will shift slightly after `sean-de-souza.md` deletion in Task 1.5 depending on his original `model:` value, but the total is 119). After strip: zero `model` fields across all 119 files.
+- Frontmatter `name` field already matches the filename slug (`adrian-rozario.md` ⇒ `name: adrian-rozario`); no diacritic / special-character edge cases beyond `s/o` → `s-o`.
+- Tier distribution among active agents: 10 exec, 5 director, 69 manager, 27 associate, 8 intern, 1 bot.
+
+- [ ] **Step 2: Run dry-run on all 119**
 
 ```bash
 pnpm exec tsx src/migrations/foundation/migrate-agents.ts --dry-run
@@ -887,12 +894,12 @@ Expected:
 ```
 mode: DRY-RUN
 loaded 120 agents from DB
-found 120 subagent .md files
+found 119 subagent .md files
   would-migrate: adrian-rozario.md
   would-migrate: amanda-setiawan.md
   would-migrate: amira-zulkifli.md
 
-result: 120 would-migrate, 0 unchanged (already migrated), 0 errors
+result: 119 would-migrate, 0 unchanged (already migrated), 0 errors
 ```
 
 If errors > 0:
@@ -929,27 +936,42 @@ Expected: empty.
 - [ ] **Step 6: Verify Agent tool added to non-leaf agents**
 
 ```bash
-# Eleanor should have Agent
+# Eleanor (exec, 0 direct reports per org chart) — should NOT have Agent in tools.
+# Her routing capability lives in registry.md (Task 4.1), not in her manager_id subtree.
 grep "^tools:" .claude/agents/eleanor-vance.md
-# Adrian (likely intern, no reports) probably should not (depends on tier)
+
+# Tsai Wei-Ming (exec, 28 direct reports) — should have Agent in tools.
+grep "^tools:" .claude/agents/tsai-wei-ming.md
+
+# Adrian (manager-tier, 0 direct reports) — should NOT have Agent in tools.
 grep "^tools:" .claude/agents/adrian-rozario.md
 ```
 
-Expected: Eleanor's tools include `Agent`. Whether Adrian's does depends on whether his tier has reports under him.
+Expected: Tsai's `tools:` line ends with `..., Agent`. Eleanor's and Adrian's are unchanged. Pattern: an agent gets `Agent` appended to `tools:` iff (a) they have a `.md` file in `.claude/agents/` AND (b) their `manager_id` subtree is non-empty. Two notable exclusions: Shin Park has 17 direct reports but no `.md` file (human user — by design); Eleanor Vance has a `.md` file but 0 direct reports per the org chart (correct per spec §5.2.1). Expected: roughly 9 of the 119 migrated files end up with `Agent` in their `tools:` line — the exact count depends on which agents have at least one direct report in the live DB at run time.
 
-- [ ] **Step 7: Spot-check eleanor-vance.md**
+- [ ] **Step 7: Spot-check `eleanor-vance.md` and one root agent.**
 
 ```bash
-tail -80 .claude/agents/eleanor-vance.md
+tail -40 .claude/agents/eleanor-vance.md
 ```
 
-Expected: the four new sections (`# Your manager`, `# Your reports`, `# Your brain`, `# Routing guidance`) appear, with Eleanor's full sub-tree (~119 reports) listed grouped by tier.
+Expected: the four new sections appear under `<!-- migrate-agents:applied -->`. **Eleanor's `# Your reports` section reads "You have no reports. You execute the work yourself."** This is correct, not a bug — Eleanor has no direct reports per the org chart, and her routing capability comes from `registry.md` (Task 4.1), not from her `manager_id` subtree. See spec §5.2.1 *Org chart vs routing graph*.
+
+For a root-style spot-check, also `tail` an agent with a real subtree:
+
+```bash
+tail -120 .claude/agents/tsai-wei-ming.md
+```
+
+Expected: `# Your reports` section lists Tsai's 28-agent subtree grouped by tier, including the `## Director`, `## Manager`, `## Associate`, `## Intern` subheadings as populated.
+
+**Sanity-print verification.** Compare each exec-tier agent's printed subtree size from the dry-run banner against the recon baseline. Do not hard-code per-agent numbers in this plan; counts shift if anyone is added/terminated/reassigned. Expected: subtree sizes for the 10 exec-tier agents match what the recon report shows for that day.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add apps/orchestrator/src/migrations/foundation/migrate-agents.ts apps/orchestrator/package.json apps/orchestrator/pnpm-lock.yaml .claude/agents/
-git commit -m "feat(agents): rewrite all 120 subagent files — strip model, add Agent tool, append manager/reports/brain/routing sections"
+git add apps/orchestrator/src/migrations/foundation/migrate-agents.ts .claude/agents/
+git commit -m "feat(agents): rewrite all 119 subagent files — strip model, add Agent to non-leaf tools, append manager/reports/brain/routing sections"
 ```
 
 ---
