@@ -124,6 +124,19 @@ export interface QueueStatusEvent extends DispatcherSseEventBase {
   queued_at: string;
 }
 
+/**
+ * Emitted to all queued runs when the worker fails a daily-budget check.
+ * The dispatcher then sleeps until `window_resets_at`. New runs enqueued
+ * during the pause receive this event on the next budget check.
+ */
+export interface BudgetExhaustedEvent extends DispatcherSseEventBase {
+  type: "budget_exhausted";
+  provider: string;
+  usage_count: number;
+  cap: number;
+  window_resets_at: string;
+}
+
 export interface RunCompletedEvent extends DispatcherSseEventBase {
   type: "run_completed";
   status: "success" | "error";
@@ -145,7 +158,8 @@ export type DispatcherSseEvent =
   | SubagentHandoffEvent
   | RunCompletedEvent
   | ErrorEvent
-  | QueueStatusEvent;
+  | QueueStatusEvent
+  | BudgetExhaustedEvent;
 
 // ---------------------------------------------------------------------------
 // Queue introspection (GET /api/queue)
@@ -153,6 +167,9 @@ export type DispatcherSseEvent =
 
 /**
  * Snapshot returned by `GET /api/queue` for operator inspection.
+ *
+ * `budget_state` reflects the most recent budget check result. `null`
+ * before the worker has performed its first check (cold-start).
  */
 export interface QueueStatusSnapshot {
   in_flight: {
@@ -167,4 +184,11 @@ export interface QueueStatusSnapshot {
     queued_at: string;
   }>;
   total_queued: number;
+  budget_state: {
+    provider: string;
+    allowed: boolean;
+    usage_count: number;
+    cap: number;
+    window_resets_at: string;
+  } | null;
 }

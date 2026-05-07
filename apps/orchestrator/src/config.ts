@@ -5,6 +5,24 @@ import { loadServerEnv } from "@headcount/shared";
 // Both must coexist. This file is the single source of truth for env loading.
 export const env = loadServerEnv();
 
+/**
+ * Phase 2 dispatcher daily-budget cap. Read directly from process.env to
+ * avoid modifying the deferred `packages/shared/src/schema.ts` (Phase 2
+ * Task 1.3 — stale, awaiting clean rewrite). Default 500 matches spec §6.8.
+ */
+function readClaudeDailyBudgetCap(): number {
+  const raw = process.env.CLAUDE_DAILY_BUDGET_CAP;
+  if (!raw) return 500;
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    console.warn(
+      `Invalid CLAUDE_DAILY_BUDGET_CAP="${raw}"; using default 500`,
+    );
+    return 500;
+  }
+  return parsed;
+}
+
 export const config = {
   tenantId: env.TENANT_ID,
   tickIntervalMs: env.TICK_INTERVAL_MS,
@@ -20,4 +38,6 @@ export const config = {
   credEncryptionKey: env.CRED_ENCRYPTION_KEY,
   genviralApiKey: env.GENVIRAL_API_KEY,
   supabaseStorageBucket: env.SUPABASE_STORAGE_BUCKET,
+  // Phase 2 Task 3.2: dispatcher daily-budget cap (Claude SDK runs)
+  claudeDailyBudgetCap: readClaudeDailyBudgetCap(),
 } as const;

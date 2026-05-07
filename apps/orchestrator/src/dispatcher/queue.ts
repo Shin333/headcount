@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { logger } from "../ops/logger.js";
 import { AsyncQueue } from "./async-queue.js";
 import { runHandler } from "./run-handler.js";
+import { checkBudget, incrementBudget, type BudgetProvider } from "./budget.js";
 import type {
   DispatcherSseEvent,
   QueueStatusEvent,
@@ -28,6 +29,7 @@ import type {
 
 const KEEPALIVE_INTERVAL_MS = 5000;
 const DEFAULT_ENTRY_AGENT_SLUG = "eleanor-vance";
+const BUDGET_PROVIDER: BudgetProvider = "claude";
 
 interface ResolvedRequest {
   project_id: string;
@@ -58,6 +60,8 @@ const queue: QueuedRun[] = [];
 let inFlight: InFlightRun | null = null;
 let workerStarted = false;
 let wakeupResolver: (() => void) | null = null;
+/** Last budget check result, reflected in `getStatus().budget_state`. */
+let lastBudgetState: QueueStatusSnapshot["budget_state"] = null;
 
 // ---------------------------------------------------------------------------
 // Worker wakeup
@@ -206,6 +210,7 @@ export function getStatus(): QueueStatusSnapshot {
       queued_at: r.queuedAt,
     })),
     total_queued: queue.length,
+    budget_state: lastBudgetState,
   };
 }
 
@@ -213,12 +218,87 @@ export function getStatus(): QueueStatusSnapshot {
 // Worker loop
 // ---------------------------------------------------------------------------
 
+/**
+ * Refreshes the worker's cached budget state from `checkBudget()`.
+ * Stored in module-level `lastBudgetState`, surfaced via `getStatus()`.
+ */
+async function refreshBudgetState(): Promise<{
+  allowed: boolean;
+  windowResetsAt: Date;
+  usageCount: number;
+  cap: number;
+}> {
+  const result = await checkBudget(BUDGET_PROVIDER);
+  lastBudgetState = {
+    provider: BUDGET_PROVIDER,
+    allowed: result.allowed,
+    usage_count: result.usage_count,
+    cap: result.cap,
+    window_resets_at: result.window_resets_at.toISOString(),
+  };
+  return {
+    allowed: result.allowed,
+    windowResetsAt: result.window_resets_at,
+    usageCount: result.usage_count,
+    cap: result.cap,
+  };
+}
+
 async function workerLoop(): Promise<void> {
   logger.info({ event: "dispatcher.worker_started" }, "queue worker started");
 
   while (true) {
     if (queue.length === 0) {
       await waitForWork();
+      continue;
+    }
+
+    // Budget check before dequeue. If exhausted, broadcast a budget_exhausted
+    // event to every queued run and pause until the window resets.
+    let budget;
+    try {
+      budget = await refreshBudgetState();
+    } catch (err) {
+      logger.error(
+        { event: "dispatcher.budget_check_error", err: (err as Error).message },
+        "budget check failed; backing off 30s before retry",
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 30_000));
+      continue;
+    }
+
+    if (!budget.allowed) {
+      const ts = new Date().toISOString();
+      const resetsAt = budget.windowResetsAt.toISOString();
+      for (const r of queue) {
+        if (r.cancelled) continue;
+        r.events.push({
+          type: "budget_exhausted",
+          run_id: r.runId,
+          seq: -1,
+          timestamp: ts,
+          provider: BUDGET_PROVIDER,
+          usage_count: budget.usageCount,
+          cap: budget.cap,
+          window_resets_at: resetsAt,
+        });
+      }
+      logger.warn(
+        {
+          event: "dispatcher.budget_exhausted",
+          provider: BUDGET_PROVIDER,
+          usage_count: budget.usageCount,
+          cap: budget.cap,
+          window_resets_at: resetsAt,
+          queue_length: queue.length,
+        },
+        "daily budget exhausted; pausing worker until window reset",
+      );
+      const sleepMs = Math.max(
+        1000,
+        budget.windowResetsAt.getTime() - Date.now(),
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, sleepMs));
       continue;
     }
 
@@ -268,6 +348,16 @@ async function workerLoop(): Promise<void> {
     } finally {
       run.events.close();
       inFlight = null;
+      // Increment regardless of run outcome — the SDK session was consumed.
+      try {
+        await incrementBudget(BUDGET_PROVIDER);
+        await refreshBudgetState();
+      } catch (e) {
+        logger.error(
+          { event: "dispatcher.budget_increment_error", err: (e as Error).message },
+          "failed to increment rate_budget",
+        );
+      }
     }
   }
 }
