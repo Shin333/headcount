@@ -162,6 +162,7 @@
 - `sender_type` is `agent` for SDK output, `user` for the inbound prompt that initiated the run.
 - Populate `run_id` (FK to `agent_runs`) and `parent_message_id` from event metadata.
 - Preserve message ordering via `created_at` — write rows in stream-arrival order.
+- **Message type filter** (per Task 1.2 stream observations). **Persist** these SDK message types: `assistant` text content → `kind: 'output'`; `assistant` tool_use blocks targeting the `Agent` tool → `kind: 'handoff'`; `user` messages with `parent_tool_use_id` (subagent context) → `kind: 'handoff'` attributed to the parent; `result` with `subtype: 'success'` → `kind: 'final'`. **Skip** these as host-only telemetry: `system/init`, `system/hook_*`, `system/task_started`, `system/task_notification`, `system/notification`. `rate_limit_event` is handled by Task 3.3 separately.
 
 **Acceptance.** Replaying a run's `project_messages` rows in `created_at` order reconstructs the conversation faithfully — every assistant message and handoff is captured, in order.
 
