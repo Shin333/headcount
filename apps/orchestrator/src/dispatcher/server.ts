@@ -1,24 +1,31 @@
 // ============================================================================
-// dispatcher/server.ts — Hono app + bootstrap (Phase 2 Task 2.1).
+// dispatcher/server.ts — Hono app + bootstrap (Phase 2 Tasks 2.1, 2.2).
 //
-// Bare HTTP scaffold for the dispatcher. One route today (`GET /health`);
-// `POST /api/run` skeleton lands in Task 2.2, persistence in Phase 4,
-// SDK invocation wiring in Phase 4.
+// Routes today:
+//   GET  /health      — liveness/version probe (Task 2.1).
+//   POST /api/run     — placeholder SSE event stream (Task 2.2; SDK wiring
+//                       lands in Task 4.1).
 //
-// Plan ref: 2026-05-07-phase2-dispatcher.md Task 2.1.
+// Plan ref: 2026-05-07-phase2-dispatcher.md Tasks 2.1, 2.2.
 // ============================================================================
 
+import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { serve, type ServerType } from "@hono/node-server";
 import { logger } from "../ops/logger.js";
-import type {
-  DispatcherServerHandle,
-  DispatcherServerOptions,
-  HealthResponse,
+import { runHandler } from "./run-handler.js";
+import {
+  RunRequestSchema,
+  type DispatcherServerHandle,
+  type DispatcherServerOptions,
+  type ErrorEvent,
+  type HealthResponse,
 } from "./types.js";
 
 const VERSION = "phase2-dispatcher-v0";
 const DEFAULT_PORT = 3001;
+const DEFAULT_ENTRY_AGENT_SLUG = "eleanor-vance";
 
 // Module-level guards for signal-handler registration. These prevent
 // double-registration if `startDispatcherServer` is called more than once
@@ -47,6 +54,7 @@ function resolvePort(options: DispatcherServerOptions): number {
 export function buildApp(): Hono {
   const app = new Hono();
 
+  // GET /health
   app.get("/health", (c) => {
     const body: HealthResponse = {
       status: "ok",
@@ -54,6 +62,77 @@ export function buildApp(): Hono {
       uptime_seconds: uptimeSeconds(),
     };
     return c.json(body);
+  });
+
+  // POST /api/run — placeholder SSE skeleton (Task 2.2).
+  app.post("/api/run", async (c) => {
+    // Parse JSON body. If parse fails, treat as a malformed request.
+    const raw = await c.req.json().catch(() => null);
+    if (raw == null) {
+      return c.json(
+        { error: "invalid request", details: "body is not valid JSON" },
+        400,
+      );
+    }
+
+    // Validate against the zod schema.
+    const parsed = RunRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return c.json(
+        { error: "invalid request", details: parsed.error.issues },
+        400,
+      );
+    }
+
+    // Apply server-side defaults (entry_agent_slug → eleanor-vance).
+    const request = {
+      project_id: parsed.data.project_id,
+      prompt: parsed.data.prompt,
+      entry_agent_slug: parsed.data.entry_agent_slug ?? DEFAULT_ENTRY_AGENT_SLUG,
+    };
+
+    // Pre-allocate the run_id so the error handler can reference it even if
+    // the generator throws before yielding the first event.
+    const runId = randomUUID();
+
+    logger.info(
+      { event: "dispatcher.run_accepted", run_id: runId, project_id: request.project_id },
+      "run accepted",
+    );
+
+    // Set the standard SSE response headers. streamSSE sets Content-Type and
+    // Cache-Control; the rest are conventional hints for proxies.
+    c.header("Connection", "keep-alive");
+    c.header("X-Accel-Buffering", "no");
+
+    return streamSSE(c, async (stream) => {
+      try {
+        for await (const event of runHandler(request, runId)) {
+          await stream.writeSSE({
+            event: event.type,
+            data: JSON.stringify(event),
+          });
+        }
+      } catch (e) {
+        const err = e as Error;
+        logger.error(
+          { event: "dispatcher.run_error", run_id: runId, err: err.message },
+          "run handler threw mid-stream",
+        );
+        const errorEvent: ErrorEvent = {
+          type: "error",
+          run_id: runId,
+          seq: -1,
+          timestamp: new Date().toISOString(),
+          message: err.message ?? "internal error",
+          recoverable: false,
+        };
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify(errorEvent),
+        });
+      }
+    });
   });
 
   return app;
@@ -73,8 +152,7 @@ export async function startDispatcherServer(
     port,
   });
 
-  // Wait for the underlying http.Server to actually be listening before
-  // returning, so callers can curl /health immediately without races.
+  // Wait for the underlying http.Server to bind before resolving.
   await new Promise<void>((resolve, reject) => {
     server.once("listening", () => resolve());
     server.once("error", (err) => reject(err));
