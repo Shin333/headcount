@@ -15,8 +15,10 @@
     "@anthropic-ai/sdk": "^0.32.1",
     "@google/genai": "^1.49.0",
     "@headcount/shared": "workspace:*",
+    "@hono/node-server": "2.0.1",
     "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
+    "hono": "4.12.18",
     "pino": "^10.3.1",
     "playwright": "^1.59.1"
   },
