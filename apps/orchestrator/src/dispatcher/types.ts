@@ -111,6 +111,19 @@ export interface SubagentHandoffEvent extends DispatcherSseEventBase {
   parent_tool_use_id: string;
 }
 
+/**
+ * Pre-run keepalive event. Emitted while a run waits in the queue.
+ * `position` is 0-indexed across the global ordering — the running run
+ * occupies position 0; queued runs are at position 1+. `seq` is set to
+ * -1 since these events fire before the run's own seq sequence begins.
+ */
+export interface QueueStatusEvent extends DispatcherSseEventBase {
+  type: "queue_status";
+  position: number;
+  total_queued: number;
+  queued_at: string;
+}
+
 export interface RunCompletedEvent extends DispatcherSseEventBase {
   type: "run_completed";
   status: "success" | "error";
@@ -131,4 +144,27 @@ export type DispatcherSseEvent =
   | ToolResultEvent
   | SubagentHandoffEvent
   | RunCompletedEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | QueueStatusEvent;
+
+// ---------------------------------------------------------------------------
+// Queue introspection (GET /api/queue)
+// ---------------------------------------------------------------------------
+
+/**
+ * Snapshot returned by `GET /api/queue` for operator inspection.
+ */
+export interface QueueStatusSnapshot {
+  in_flight: {
+    run_id: string;
+    project_id: string;
+    started_at: string;
+    current_seq: number;
+  } | null;
+  queued: Array<{
+    run_id: string;
+    project_id: string;
+    queued_at: string;
+  }>;
+  total_queued: number;
+}

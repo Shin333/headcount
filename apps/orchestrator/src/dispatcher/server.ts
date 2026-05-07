@@ -1,20 +1,23 @@
 // ============================================================================
-// dispatcher/server.ts — Hono app + bootstrap (Phase 2 Tasks 2.1, 2.2).
+// dispatcher/server.ts — Hono app + bootstrap (Phase 2 Tasks 2.1, 2.2, 3.1).
 //
-// Routes today:
+// Routes:
 //   GET  /health      — liveness/version probe (Task 2.1).
-//   POST /api/run     — placeholder SSE event stream (Task 2.2; SDK wiring
-//                       lands in Task 4.1).
+//   POST /api/run     — enqueues a run; streams SSE events from the worker
+//                       (Tasks 2.2 + 3.1).
+//   GET  /api/queue   — queue introspection snapshot (Task 3.1).
 //
-// Plan ref: 2026-05-07-phase2-dispatcher.md Tasks 2.1, 2.2.
+// SDK invocation wires up in Task 4.1 — the run-handler is still a 500ms
+// placeholder generator today.
+//
+// Plan ref: 2026-05-07-phase2-dispatcher.md Tasks 2.1, 2.2, 3.1.
 // ============================================================================
 
-import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { serve, type ServerType } from "@hono/node-server";
 import { logger } from "../ops/logger.js";
-import { runHandler } from "./run-handler.js";
+import { enqueue, getStatus } from "./queue.js";
 import {
   RunRequestSchema,
   type DispatcherServerHandle,
@@ -25,7 +28,6 @@ import {
 
 const VERSION = "phase2-dispatcher-v0";
 const DEFAULT_PORT = 3001;
-const DEFAULT_ENTRY_AGENT_SLUG = "eleanor-vance";
 
 // Module-level guards for signal-handler registration. These prevent
 // double-registration if `startDispatcherServer` is called more than once
@@ -64,9 +66,13 @@ export function buildApp(): Hono {
     return c.json(body);
   });
 
-  // POST /api/run — placeholder SSE skeleton (Task 2.2).
+  // GET /api/queue — queue introspection
+  app.get("/api/queue", (c) => {
+    return c.json(getStatus());
+  });
+
+  // POST /api/run — enqueue and stream SSE
   app.post("/api/run", async (c) => {
-    // Parse JSON body. If parse fails, treat as a malformed request.
     const raw = await c.req.json().catch(() => null);
     if (raw == null) {
       return c.json(
@@ -75,7 +81,6 @@ export function buildApp(): Hono {
       );
     }
 
-    // Validate against the zod schema.
     const parsed = RunRequestSchema.safeParse(raw);
     if (!parsed.success) {
       return c.json(
@@ -84,30 +89,37 @@ export function buildApp(): Hono {
       );
     }
 
-    // Apply server-side defaults (entry_agent_slug → eleanor-vance).
-    const request = {
-      project_id: parsed.data.project_id,
-      prompt: parsed.data.prompt,
-      entry_agent_slug: parsed.data.entry_agent_slug ?? DEFAULT_ENTRY_AGENT_SLUG,
-    };
-
-    // Pre-allocate the run_id so the error handler can reference it even if
-    // the generator throws before yielding the first event.
-    const runId = randomUUID();
+    // Enqueue the run. The queue assigns the runId and returns the events
+    // iterable that the worker will push into. Default entry_agent_slug
+    // resolution lives inside the queue too.
+    const { runId, events, cancel } = enqueue(parsed.data);
 
     logger.info(
-      { event: "dispatcher.run_accepted", run_id: runId, project_id: request.project_id },
+      {
+        event: "dispatcher.run_accepted",
+        run_id: runId,
+        project_id: parsed.data.project_id,
+      },
       "run accepted",
     );
 
-    // Set the standard SSE response headers. streamSSE sets Content-Type and
-    // Cache-Control; the rest are conventional hints for proxies.
+    // If the client disconnects, signal cancel. Hono's underlying Request
+    // exposes an AbortSignal that fires on disconnect (when the platform
+    // adapter wires it through — Node adapter does so via http.IncomingMessage
+    // close events). If the run hasn't started yet, cancel removes it from
+    // the queue. If mid-run, the worker is allowed to finish so persistence
+    // (Phase 4) records the full run.
+    const abortSignal = c.req.raw.signal;
+    if (abortSignal) {
+      abortSignal.addEventListener("abort", cancel, { once: true });
+    }
+
     c.header("Connection", "keep-alive");
     c.header("X-Accel-Buffering", "no");
 
     return streamSSE(c, async (stream) => {
       try {
-        for await (const event of runHandler(request, runId)) {
+        for await (const event of events) {
           await stream.writeSSE({
             event: event.type,
             data: JSON.stringify(event),
@@ -116,8 +128,8 @@ export function buildApp(): Hono {
       } catch (e) {
         const err = e as Error;
         logger.error(
-          { event: "dispatcher.run_error", run_id: runId, err: err.message },
-          "run handler threw mid-stream",
+          { event: "dispatcher.stream_error", run_id: runId, err: err.message },
+          "SSE stream errored",
         );
         const errorEvent: ErrorEvent = {
           type: "error",
@@ -184,6 +196,8 @@ export async function startDispatcherServer(
  * Registers SIGINT/SIGTERM handlers that gracefully stop the dispatcher
  * and exit the process. Idempotent: subsequent calls are no-ops, and
  * concurrent signals only run shutdown once.
+ *
+ * Verification gap on Windows local dev — see commit d5ccac7.
  */
 function registerShutdownHandlers(handle: DispatcherServerHandle): void {
   if (signalsRegistered) return;
