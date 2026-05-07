@@ -127,6 +127,7 @@
 - On transient SDK errors (network failures, 5xx responses), retry with capped exponential backoff: 3 retries at 10s → 30s → 90s.
 - On auth errors (401, 403), do NOT retry — fail fast and emit a clear `error` SSE event with a message instructing the operator to run `claude auth login`.
 - Soft-signal monitoring: when transient errors cluster within a short window, write a structured log line via `ops/logger.ts` so we can spot rate-limit canaries early.
+- Subscribe to `rate_limit_event` SDK messages directly as the soft-signal source (Task 1.2 confirmed the SDK emits these as discrete stream events, not just as 429 errors). Don't infer rate-limit pressure from latency spikes alone.
 
 **Acceptance.** Synthetic test where the SDK is mocked to throw a transient error confirms the backoff sequence. Auth error fails immediately without retry. Soft-signal log line lands when expected.
 
