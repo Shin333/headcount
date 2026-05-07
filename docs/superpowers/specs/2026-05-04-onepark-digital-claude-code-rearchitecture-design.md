@@ -354,7 +354,7 @@ Subscription auth is sold for human-paced, interactive use. Running 120 agents t
 
 ### 6.9 Auth policy
 
-Onepark Digital authenticates the Claude Agent SDK via OAuth credentials cached at `~/.claude/credentials.json` (the SDK's fallback path when `ANTHROPIC_API_KEY` is unset). This satisfies the zero-per-token-spend invariant by routing all calls through Shin's Claude Max subscription.
+Onepark Digital authenticates the Claude Agent SDK via OAuth credentials cached at `~/.claude/.credentials.json` (the SDK's fallback path when `ANTHROPIC_API_KEY` is unset). This satisfies the zero-per-token-spend invariant by routing all calls through Shin's Claude Max subscription.
 
 Anthropic's docs discourage "third party developers offering claude.ai login or rate limits for their products." The restriction targets multi-tenant products that consume the operator's Anthropic relationship to serve other users. Onepark Digital is single-operator — Shin's own subscription, his own machine, his own work, no other users authenticating, no service resold. Functionally identical to running `claude` CLI in a long automation script (the documented Claude Code happy path).
 
