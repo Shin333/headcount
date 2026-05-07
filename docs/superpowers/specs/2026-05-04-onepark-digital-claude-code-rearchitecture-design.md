@@ -352,6 +352,18 @@ Subscription auth is sold for human-paced, interactive use. Running 120 agents t
 
 **Failure mode: dispatcher gets soft-banned.** Symptoms: latency spike to 30s+ per call, 429s on every request, or persistent CAPTCHA. Response sequence: (1) HEALTH flips red, (2) dispatcher pauses Claude routing for 4 hours, (3) optionally falls through to Codex if user opts in, (4) sends push notification with the symptoms. Manual recovery only — do not auto-resume.
 
+### 6.9 Auth policy
+
+Onepark Digital authenticates the Claude Agent SDK via OAuth credentials cached at `~/.claude/credentials.json` (the SDK's fallback path when `ANTHROPIC_API_KEY` is unset). This satisfies the zero-per-token-spend invariant by routing all calls through Shin's Claude Max subscription.
+
+Anthropic's docs discourage "third party developers offering claude.ai login or rate limits for their products." The restriction targets multi-tenant products that consume the operator's Anthropic relationship to serve other users. Onepark Digital is single-operator — Shin's own subscription, his own machine, his own work, no other users authenticating, no service resold. Functionally identical to running `claude` CLI in a long automation script (the documented Claude Code happy path).
+
+Operational implications:
+
+- The dispatcher process runs on a machine with a valid `claude auth login` session.
+- `ANTHROPIC_API_KEY` must NOT be set in the dispatcher's environment — its presence overrides the OAuth fallback and routes through metered API access, breaking the spec invariant.
+- If the use case changes (multi-user product, third-party access, paid offering) or Anthropic updates the policy, this section must be revisited before that change ships.
+
 ## 7. Data model — final schema (13 tables)
 
 After migrations `0024` and `0025`, the final schema is **13 tables**: a Core 10 plus 3 preserved with explicit rationale.
