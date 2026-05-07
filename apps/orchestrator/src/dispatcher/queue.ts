@@ -16,10 +16,17 @@
 // ============================================================================
 
 import { randomUUID } from "node:crypto";
+import { config } from "../config.js";
 import { logger } from "../ops/logger.js";
 import { AsyncQueue } from "./async-queue.js";
 import { runHandler } from "./run-handler.js";
 import { checkBudget, incrementBudget, type BudgetProvider } from "./budget.js";
+import {
+  withRetry,
+  defaultIsAuthError,
+  defaultIsTransient,
+  createSoftSignalDetector,
+} from "./retry.js";
 import type {
   DispatcherSseEvent,
   QueueStatusEvent,
@@ -30,6 +37,23 @@ import type {
 const KEEPALIVE_INTERVAL_MS = 5000;
 const DEFAULT_ENTRY_AGENT_SLUG = "eleanor-vance";
 const BUDGET_PROVIDER: BudgetProvider = "claude";
+
+// Module-level soft-signal cluster detector. Records transient SDK errors
+// across runs; fires `dispatcher.soft_signal_cluster` once per cluster.
+const softSignal = createSoftSignalDetector({
+  windowMs: config.softSignalClusterWindowMs,
+  threshold: config.softSignalClusterThreshold,
+  onCluster: (errors) => {
+    logger.warn(
+      {
+        event: "dispatcher.soft_signal_cluster",
+        count: errors.length,
+        window_ms: config.softSignalClusterWindowMs,
+      },
+      "transient-error cluster detected — possible rate-limit canary",
+    );
+  },
+});
 
 interface ResolvedRequest {
   project_id: string;
@@ -62,6 +86,10 @@ let workerStarted = false;
 let wakeupResolver: (() => void) | null = null;
 /** Last budget check result, reflected in `getStatus().budget_state`. */
 let lastBudgetState: QueueStatusSnapshot["budget_state"] = null;
+/** True at startup and any time the worker drains the queue to empty.
+ *  Set to false after the first run dequeued from a non-empty wakeup.
+ *  Used to skip jitter for the first run after an idle period. */
+let firstRunAfterIdle = true;
 
 // ---------------------------------------------------------------------------
 // Worker wakeup
@@ -244,11 +272,47 @@ async function refreshBudgetState(): Promise<{
   };
 }
 
+/** Random delay in [jitterMinMs, jitterMaxMs] inclusive, ms. */
+function pickJitterMs(): number {
+  const min = config.jitterMinMs;
+  const max = config.jitterMaxMs;
+  if (max <= min) return min;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/**
+ * Drains `runHandler` into the run's AsyncQueue. Logs and forwards
+ * rate_limit_event messages from the SDK as scaffolding for Phase 4
+ * (the placeholder generator never emits these today).
+ */
+async function iterateRunHandler(
+  run: QueuedRun,
+  inFlightRef: { current: InFlightRun | null },
+): Promise<void> {
+  for await (const event of runHandler(run.request, run.runId)) {
+    if (event.type === "rate_limit_event") {
+      logger.warn(
+        {
+          event: "dispatcher.rate_limit_event",
+          severity: event.severity,
+          provider: event.provider,
+          run_id: event.run_id,
+        },
+        "rate-limit signal from SDK",
+      );
+    }
+    if (inFlightRef.current) inFlightRef.current.currentSeq = event.seq;
+    run.events.push(event);
+  }
+}
+
 async function workerLoop(): Promise<void> {
   logger.info({ event: "dispatcher.worker_started" }, "queue worker started");
 
   while (true) {
     if (queue.length === 0) {
+      // Drained → next run is "first after idle" and skips jitter.
+      firstRunAfterIdle = true;
       await waitForWork();
       continue;
     }
@@ -302,6 +366,17 @@ async function workerLoop(): Promise<void> {
       continue;
     }
 
+    // Apply jitter before processing each successive run. The first run
+    // after an idle period skips this — see firstRunAfterIdle handling.
+    if (!firstRunAfterIdle) {
+      const jitterMs = pickJitterMs();
+      logger.info(
+        { event: "dispatcher.jitter_sleep", jitter_ms: jitterMs },
+        `jitter sleep ${jitterMs}ms`,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, jitterMs));
+    }
+
     const run = queue[0]!;
     if (run.cancelled) {
       queue.shift();
@@ -309,6 +384,7 @@ async function workerLoop(): Promise<void> {
     }
     queue.shift();
     stopKeepalive(run);
+    firstRunAfterIdle = false;
 
     inFlight = {
       runId: run.runId,
@@ -323,27 +399,57 @@ async function workerLoop(): Promise<void> {
     );
 
     try {
-      for await (const event of runHandler(run.request, run.runId)) {
-        if (inFlight) inFlight.currentSeq = event.seq;
-        run.events.push(event);
-      }
+      // SCAFFOLDING for Phase 4. Retrying re-runs the AsyncGenerator from
+      // scratch; events already pushed to run.events would duplicate. The
+      // placeholder generator never throws so retry never fires today.
+      // Phase 4 will refactor to put retry around SDK invocation only,
+      // with iterator state preserved across attempts.
+      const inFlightRef = { current: inFlight };
+      await withRetry(() => iterateRunHandler(run, inFlightRef), {
+        maxRetries: config.maxTransientRetries,
+        delays: config.transientRetryDelaysMs,
+        isAuthError: defaultIsAuthError,
+        isTransient: defaultIsTransient,
+        onTransientFailure: (err, attempt) => {
+          softSignal.recordTransient(err);
+          logger.warn(
+            {
+              event: "dispatcher.transient_retry",
+              run_id: run.runId,
+              attempt,
+              err: (err as Error).message,
+            },
+            "transient error; retrying",
+          );
+        },
+      });
       logger.info(
         { event: "dispatcher.run_completed", run_id: run.runId },
         "run completed",
       );
     } catch (err) {
       const e = err as Error;
+      const auth = defaultIsAuthError(err);
       logger.error(
-        { event: "dispatcher.run_error", run_id: run.runId, err: e.message },
-        "worker run failed",
+        {
+          event: "dispatcher.run_error",
+          run_id: run.runId,
+          err: e.message,
+          auth_error: auth,
+        },
+        auth
+          ? "auth error — operator must re-`claude auth login`"
+          : "worker run failed after retries",
       );
       run.events.push({
         type: "error",
         run_id: run.runId,
         seq: -1,
         timestamp: new Date().toISOString(),
-        message: e.message ?? "internal error",
-        recoverable: false,
+        message: auth
+          ? `auth error: ${e.message ?? "unauthorized"}. Run \`claude auth login\` and restart the dispatcher.`
+          : e.message ?? "internal error",
+        recoverable: !auth,
       });
     } finally {
       run.events.close();

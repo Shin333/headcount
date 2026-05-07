@@ -137,6 +137,22 @@ export interface BudgetExhaustedEvent extends DispatcherSseEventBase {
   window_resets_at: string;
 }
 
+/**
+ * Forwarded from the SDK's stream when the underlying provider signals
+ * rate-limit pressure (informational, not a failure). The dispatcher logs
+ * each occurrence as a soft-signal canary; the route forwards it to the
+ * client. NOT persisted to project_messages (per Plan 2 Task 4.2 amendment).
+ *
+ * Scaffolding only today — the placeholder runHandler doesn't emit these;
+ * the real SDK wiring in Phase 4 will surface them.
+ */
+export interface RateLimitEvent extends DispatcherSseEventBase {
+  type: "rate_limit_event";
+  provider: string;
+  severity: "soft" | "hard";
+  details: unknown;
+}
+
 export interface RunCompletedEvent extends DispatcherSseEventBase {
   type: "run_completed";
   status: "success" | "error";
@@ -159,7 +175,8 @@ export type DispatcherSseEvent =
   | RunCompletedEvent
   | ErrorEvent
   | QueueStatusEvent
-  | BudgetExhaustedEvent;
+  | BudgetExhaustedEvent
+  | RateLimitEvent;
 
 // ---------------------------------------------------------------------------
 // Queue introspection (GET /api/queue)

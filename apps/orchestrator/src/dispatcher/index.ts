@@ -21,5 +21,6 @@ export type {
   ErrorEvent,
   QueueStatusEvent,
   BudgetExhaustedEvent,
+  RateLimitEvent,
   QueueStatusSnapshot,
 } from "./types.js";
