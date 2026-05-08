@@ -116,6 +116,15 @@ export interface ToolResultEvent extends DispatcherSseEventBase {
   tool_use_id: string;
   output: unknown;
   is_error: boolean;
+  /**
+   * Text-only extraction of `output` for downstream `project_messages`
+   * persistence (Plan 2 Task 4.3). When `output` is an array of content
+   * blocks, all `type === 'text'` blocks are concatenated with `\n\n`. If no
+   * text blocks are present, falls back to `JSON.stringify(output)`. Empty
+   * extractions are allowed; the persistence layer's body NOT-NULL guard
+   * skips them.
+   */
+  content_text: string;
 }
 
 export interface SubagentHandoffEvent extends DispatcherSseEventBase {

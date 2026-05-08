@@ -125,6 +125,40 @@ interface RateLimitMessageShape {
   rate_limit_info?: { status?: string };
 }
 
+/**
+ * Extracts a human-readable string from an SDK tool_result block's `content`
+ * for project_messages persistence (Plan 2 Task 4.3). Strategy:
+ *   - string passthrough.
+ *   - array of content blocks → concatenate `text` fields of `type === 'text'`
+ *     blocks with `\n\n`. If no text blocks (e.g., image-only return),
+ *     `JSON.stringify` the whole content array as a structural fallback.
+ *   - any other shape → `JSON.stringify` (or empty string for null/undefined).
+ *
+ * Empty strings allowed; the queue-side body NOT-NULL guard handles them.
+ */
+function extractToolResultText(output: unknown): string {
+  if (output == null) return "";
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) {
+    const texts: string[] = [];
+    for (const block of output) {
+      if (block && typeof block === "object") {
+        const b = block as Record<string, unknown>;
+        if (b.type === "text" && typeof b.text === "string") {
+          texts.push(b.text);
+        }
+      }
+    }
+    if (texts.length > 0) return texts.join("\n\n");
+    return JSON.stringify(output);
+  }
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // runHandler — emits dispatcher SSE events from a single SDK query().
 //
@@ -335,12 +369,14 @@ export async function* runHandler(
           for (const block of content) {
             const b = block as Record<string, unknown>;
             if (b.type === "tool_result") {
+              const output = b.content ?? null;
               yield {
                 type: "tool_result",
                 ...nextBase(),
                 tool_use_id: (b.tool_use_id as string | undefined) ?? "",
-                output: b.content ?? null,
+                output,
                 is_error: b.is_error === true,
+                content_text: extractToolResultText(output),
               };
             }
           }

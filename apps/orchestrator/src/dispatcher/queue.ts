@@ -287,15 +287,31 @@ function pickJitterMs(): number {
  * terminal event — conservative.
  */
 /**
- * Per-run state for nested agent_runs lifecycle (Phase 4 Task 4.1c). Built
- * up as `subagent_handoff` events flow by; consulted on `tool_result` to
- * close the matching nested row, and on terminal `error` to fail any
- * leftovers.
+ * Per-run state for nested agent_runs lifecycle + project_messages chain
+ * (Phase 4 Tasks 4.1c, 4.2, 4.3). Built up as `subagent_handoff` events
+ * flow by; consulted on `tool_result` to close the matching nested
+ * agent_runs row, INSERT a `comment` project_messages row attributed to
+ * the dispatched subagent and chained via `parent_message_id` to the
+ * handoff row; on terminal error/cancellation to fail/cancel any leftovers.
+ *
+ * Populated incrementally:
+ *   - 4.1c sets nestedRunId + agentSlug + startedAt + agentId on
+ *     subagent_handoff event observation.
+ *   - 4.2 sets handoffMessageId after the handoff project_messages INSERT
+ *     succeeds.
+ *   - 4.3 reads {agentId, nestedRunId, handoffMessageId} when a tool_result
+ *     event matches a tracked dispatch.
  */
-interface NestedRunRecord {
-  runId: string;
+interface SubagentDispatchRecord {
+  nestedRunId: string;
   agentSlug: string;
+  agentId: string;
   startedAt: number;
+  /** Null between subagent_handoff event observation and the handoff
+   *  project_messages INSERT. After the INSERT, the new row's id; if the
+   *  INSERT fails, stays null and the comment row's parent_message_id
+   *  becomes null too (degraded but not fatal — chain breaks gracefully). */
+  handoffMessageId: string | null;
 }
 
 interface IterationOutcome {
@@ -314,21 +330,29 @@ async function insertProjectMessage(args: {
   runId: string;
   projectId: string;
   senderId: string;
-  kind: "output" | "handoff" | "final";
+  kind: "output" | "handoff" | "comment" | "final";
   body: string;
+  /** Optional parent_message_id for `kind='comment'` rows that chain to a
+   *  previously-INSERTed `kind='handoff'` row (Plan 2 Task 4.3). null/
+   *  undefined leaves the column null (output/handoff/final use this). */
+  parentMessageId?: string | null;
 }): Promise<string | null> {
   if (args.body.length === 0) return null;
   try {
+    const insertRow: Record<string, unknown> = {
+      project_id: args.projectId,
+      sender_type: "agent",
+      sender_id: args.senderId,
+      kind: args.kind,
+      body: args.body,
+      run_id: args.runId,
+    };
+    if (args.parentMessageId != null) {
+      insertRow.parent_message_id = args.parentMessageId;
+    }
     const { data, error } = await db
       .from("project_messages")
-      .insert({
-        project_id: args.projectId,
-        sender_type: "agent",
-        sender_id: args.senderId,
-        kind: args.kind,
-        body: args.body,
-        run_id: args.runId,
-      })
+      .insert(insertRow)
       .select("id")
       .single();
     if (error) throw new Error(error.message);
@@ -353,25 +377,15 @@ async function iterateRunHandler(
 ): Promise<IterationOutcome> {
   let outcome: IterationOutcome = { status: "failed" };
 
-  // tool_use_id of an Agent dispatch → nested run record. Populated when a
-  // `subagent_handoff` event arrives (i.e., a non-entry Agent tool_use was
-  // observed by the run-handler). Closed when the matching `tool_result`
-  // arrives, or fail-flushed on terminal error / cancellation.
-  const nestedRuns = new Map<string, NestedRunRecord>();
+  // Unified per-run map: tool_use_id → record carrying everything the
+  // tool_result handler needs (nested agent_runs id for status UPDATE +
+  // duration_ms; agent_id for sender attribution; handoff_message_id for
+  // parent_message_id chaining on the comment row). See
+  // SubagentDispatchRecord docstring for incremental-population timeline.
+  const toolUseDispatch = new Map<string, SubagentDispatchRecord>();
 
-  // tool_use_id → message_id of the corresponding handoff project_messages
-  // row. Populated on subagent_handoff INSERT; consumed by Task 4.3 for the
-  // parent_message_id chain. Task 4.2 builds the foundation; Task 4.3 wires
-  // up parent_message_id resolution against this map.
-  const toolUseToMessageId = new Map<string, string>();
-  void toolUseToMessageId; // silence unused-var until 4.3 reads it
-
-  // All sender attribution flows from the entry agent per the simplification
-  // documented in Plan 2 Task 4.2: empirical SDK behavior shows subagent text
-  // returns as tool_result roll-ups (never as separately-streamed assistant
-  // messages with parent_tool_use_id != null), so we never observe a
-  // different sender within a single dispatcher run. If that ever changes,
-  // sender_id resolution would consult toolUseIdToSlug → resolveAgentIdBySlug.
+  // Entry-agent sender id — used for output/handoff/final rows. Subagent
+  // comment rows resolve sender via the dispatch record's agentId instead.
   const entrySenderId = run.request.agent_id;
 
   for await (const event of runHandler(run.request, run.runId, run.abortSignal)) {
@@ -415,25 +429,11 @@ async function iterateRunHandler(
     }
 
     if (event.type === "subagent_handoff") {
-      // Persist the handoff to project_messages BEFORE the nested
-      // agent_runs INSERT so toolUseToMessageId is populated by the time
-      // any subsequent persistence logic (Task 4.3) needs the message_id
-      // for parent_message_id chaining.
-      const handoffMessageId = await insertProjectMessage({
-        runId: run.runId,
-        projectId: run.request.project_id,
-        senderId: entrySenderId,
-        kind: "handoff",
-        body: event.invocation_prompt,
-      });
-      if (handoffMessageId != null) {
-        toolUseToMessageId.set(event.parent_tool_use_id, handoffMessageId);
-      }
-
       // Resolve agent_id for the dispatched slug. If unresolved, log + skip
-      // the nested INSERT (the SSE event still flows; the map stays empty
-      // for this tool_use_id, so the eventual tool_result won't UPDATE
-      // anything — acceptable degradation).
+      // both the nested agent_runs INSERT and the handoff project_messages
+      // INSERT; the SSE event still flows. Map stays empty for this
+      // tool_use_id, so the eventual tool_result won't write a comment row
+      // either — acceptable degradation.
       let agentId: string | null = null;
       try {
         agentId = await resolveAgentIdBySlug(event.to_agent_slug);
@@ -455,11 +455,14 @@ async function iterateRunHandler(
             tool_use_id: event.parent_tool_use_id,
             run_id: event.run_id,
           },
-          "unknown subagent slug; skipping nested agent_runs INSERT",
+          "unknown subagent slug; skipping nested agent_runs + handoff INSERTs",
         );
       } else {
         const nestedRunId = randomUUID();
         const startedAt = Date.now();
+
+        // INSERT nested agent_runs row first so the dispatch record is
+        // populated even if the handoff project_messages INSERT fails.
         try {
           const { error: insErr } = await db.from("agent_runs").insert({
             id: nestedRunId,
@@ -469,10 +472,12 @@ async function iterateRunHandler(
             status: "running",
           });
           if (insErr) throw new Error(insErr.message);
-          nestedRuns.set(event.parent_tool_use_id, {
-            runId: nestedRunId,
+          toolUseDispatch.set(event.parent_tool_use_id, {
+            nestedRunId,
             agentSlug: event.to_agent_slug,
+            agentId,
             startedAt,
+            handoffMessageId: null,
           });
           logger.info(
             {
@@ -495,13 +500,32 @@ async function iterateRunHandler(
             "failed to insert nested agent_runs row",
           );
         }
+
+        // INSERT handoff project_messages row (Task 4.2). Sender attribution
+        // for the handoff itself is the entry agent (the dispatcher of the
+        // subagent), not the dispatched subagent. Record the new id on the
+        // dispatch record so the eventual comment row can chain to it.
+        const handoffMessageId = await insertProjectMessage({
+          runId: run.runId,
+          projectId: run.request.project_id,
+          senderId: entrySenderId,
+          kind: "handoff",
+          body: event.invocation_prompt,
+        });
+        const rec = toolUseDispatch.get(event.parent_tool_use_id);
+        if (rec && handoffMessageId != null) {
+          rec.handoffMessageId = handoffMessageId;
+        }
       }
     } else if (event.type === "tool_result") {
-      // Look up the matching nested run, if any. Non-Agent tool_results
-      // (Bash, Read, etc.) won't be in the map — that's fine, no-op.
-      const rec = nestedRuns.get(event.tool_use_id);
+      // Look up the matching tracked subagent dispatch. Non-Agent
+      // tool_results (Bash, Read, etc.) and the entry dispatch's own
+      // tool_result return both miss the map — fine, no-op.
+      const rec = toolUseDispatch.get(event.tool_use_id);
       if (rec) {
-        nestedRuns.delete(event.tool_use_id);
+        toolUseDispatch.delete(event.tool_use_id);
+
+        // UPDATE nested agent_runs row to terminal status (Task 4.1c).
         const completionStatus = event.is_error ? "failed" : "completed";
         try {
           const { error: updErr } = await db
@@ -511,12 +535,12 @@ async function iterateRunHandler(
               completed_at: new Date().toISOString(),
               duration_ms: Date.now() - rec.startedAt,
             })
-            .eq("id", rec.runId);
+            .eq("id", rec.nestedRunId);
           if (updErr) throw new Error(updErr.message);
           logger.info(
             {
               event: "dispatcher.nested_run_completed",
-              run_id: rec.runId,
+              run_id: rec.nestedRunId,
               parent_run_id: run.runId,
               agent_slug: rec.agentSlug,
               status: completionStatus,
@@ -528,11 +552,24 @@ async function iterateRunHandler(
             {
               event: "dispatcher.nested_agent_runs_update_error",
               err: (e as Error).message,
-              run_id: rec.runId,
+              run_id: rec.nestedRunId,
             },
             "failed to UPDATE nested agent_runs row",
           );
         }
+
+        // INSERT comment project_messages row (Task 4.3). Sender is the
+        // dispatched subagent; run_id is the nested run; parent_message_id
+        // chains to the handoff row that introduced this subagent. Persist
+        // is_error=true returns too — body conveys the failure signal.
+        await insertProjectMessage({
+          runId: rec.nestedRunId,
+          projectId: run.request.project_id,
+          senderId: rec.agentId,
+          kind: "comment",
+          body: event.content_text,
+          parentMessageId: rec.handoffMessageId,
+        });
       }
     }
 
@@ -551,10 +588,10 @@ async function iterateRunHandler(
   // 'cancelled' to the orphans (the user disconnect implicitly cancels every
   // nested subagent that was still running). Otherwise mark them 'failed' so
   // the table doesn't carry stale 'running' rows.
-  if (nestedRuns.size > 0) {
+  if (toolUseDispatch.size > 0) {
     const orphanStatus = outcome.status === "cancelled" ? "cancelled" : "failed";
     const completedAt = new Date().toISOString();
-    for (const [, rec] of nestedRuns) {
+    for (const [, rec] of toolUseDispatch) {
       try {
         // Only flip rows that are still 'running' — guards against
         // overwriting nested rows that completed normally between the last
@@ -566,12 +603,12 @@ async function iterateRunHandler(
             completed_at: completedAt,
             duration_ms: Date.now() - rec.startedAt,
           })
-          .eq("id", rec.runId)
+          .eq("id", rec.nestedRunId)
           .eq("status", "running");
         logger.warn(
           {
             event: "dispatcher.nested_run_orphaned",
-            run_id: rec.runId,
+            run_id: rec.nestedRunId,
             parent_run_id: run.runId,
             agent_slug: rec.agentSlug,
             status: orphanStatus,
@@ -583,7 +620,7 @@ async function iterateRunHandler(
           {
             event: "dispatcher.nested_orphan_update_error",
             err: (e as Error).message,
-            run_id: rec.runId,
+            run_id: rec.nestedRunId,
           },
           "failed to UPDATE orphaned nested agent_runs row",
         );
