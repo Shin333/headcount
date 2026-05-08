@@ -274,7 +274,7 @@ Items the recon couldn't answer, to be resolved during execution:
 
 ### Task 5.1: Dashboard hotfix — `project_members` → `project_participants`
 
-**Status:** TO DO.
+**Status:** DONE (commit 393dd37).
 
 **Reason.** Phase 2 recon found `apps/dashboard/app/api/projects/route.ts:37` queries the table as `project_members` — but 0024 renamed it to `project_participants`. The dashboard's projects view is broken today. Cheap fix; big sanity-check win when verifying Task 5.3.
 
@@ -287,7 +287,7 @@ Items the recon couldn't answer, to be resolved during execution:
 
 ### Task 5.2: Replace `index.ts:main()` to boot the dispatcher
 
-**Status:** TO DO.
+**Status:** DONE (Plan 2 Task 5.2 commit on feat/claude-code-rearchitecture).
 
 **Reason.** Current `index.ts:main()` calls `startTickLoop()` which imports rituals that query dropped tables — the orchestrator crashes on startup today. Phase 2 replaces this with `startDispatcherServer()`. Legacy code stays in tree until Plan 5 nukes it; only the entry point flips.
 

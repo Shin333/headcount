@@ -1,65 +1,10 @@
 import "dotenv/config";
 import { config } from "./config.js";
-import { startTickLoop } from "./world/tick.js";
-import { db } from "./db.js";
-import { getRegisteredToolNames } from "./tools/registry.js";
-import { getRegisteredMcpServerNames } from "./tools/mcp-registry.js";
+import { startDispatcherServer } from "./dispatcher/index.js";
+import { logger } from "./ops/logger.js";
 import { registerShutdown, registerCloser } from "./ops/shutdown.js";
 import { closeBrowser } from "./tools/browser.js";
 import { isEncryptionKeyConfigured } from "./auth/crypto.js";
-
-/**
- * Cross-check every active agent's tool_access against the in-process tool
- * registry. Unknown names are dropped silently at runtime (registry.ts:55),
- * so a typo like 'code_artfiact_create' produces a permanently tool-less
- * agent with no error. This validator surfaces those at startup.
- *
- * Warn-only for now — does not exit. Promote to hard-exit once we trust the
- * seed pipeline.
- */
-async function validateAgentToolAccess(): Promise<void> {
-  const knownTools = new Set(getRegisteredToolNames());
-  const knownMcp = new Set(getRegisteredMcpServerNames());
-
-  const { data: agents, error } = await db
-    .from("agents")
-    .select("id, name, tool_access, mcp_access")
-    .eq("tenant_id", config.tenantId)
-    .eq("status", "active");
-
-  if (error) {
-    console.warn(`[startup] tool-access validator query failed: ${error.message}`);
-    return;
-  }
-
-  const toolOffenders: Array<{ name: string; unknown: string[] }> = [];
-  const mcpOffenders: Array<{ name: string; unknown: string[] }> = [];
-  for (const agent of agents ?? []) {
-    const access: string[] = (agent as { tool_access?: string[] }).tool_access ?? [];
-    const mcpAccess: string[] = (agent as { mcp_access?: string[] }).mcp_access ?? [];
-    const unknownTools = access.filter((t) => !knownTools.has(t));
-    const unknownMcp = mcpAccess.filter((t) => !knownMcp.has(t));
-    const name = (agent as { name: string }).name;
-    if (unknownTools.length > 0) toolOffenders.push({ name, unknown: unknownTools });
-    if (unknownMcp.length > 0) mcpOffenders.push({ name, unknown: unknownMcp });
-  }
-
-  if (toolOffenders.length === 0 && mcpOffenders.length === 0) {
-    console.log(
-      `Tool-access validator: OK (${agents?.length ?? 0} active agents, ${knownTools.size} tools, ${knownMcp.size} MCP servers).`
-    );
-    return;
-  }
-  if (toolOffenders.length > 0) {
-    console.warn(`Tool-access validator: ${toolOffenders.length} agent(s) reference unknown tools:`);
-    for (const o of toolOffenders) console.warn(`  - ${o.name}: [${o.unknown.join(", ")}]`);
-  }
-  if (mcpOffenders.length > 0) {
-    console.warn(`MCP-access validator: ${mcpOffenders.length} agent(s) reference unknown MCP servers:`);
-    for (const o of mcpOffenders) console.warn(`  - ${o.name}: [${o.unknown.join(", ")}]`);
-  }
-  console.warn("(Unknown entries will be silently dropped at runtime. Fix the column or update the registry.)");
-}
 
 async function main() {
   console.log("");
@@ -74,23 +19,16 @@ async function main() {
   console.log(`Speed:   ${config.speedMultiplier}x (1 wall sec = ${config.speedMultiplier} company sec)`);
   console.log("");
 
-  // Sanity check DB
-  const { error } = await db.from("world_clock").select("id").eq("id", 1).single();
-  if (error) {
-    console.error("Cannot reach Supabase. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
-    console.error(error);
-    process.exit(1);
+  // Spec §6.9: Claude Max OAuth credentials only. ANTHROPIC_API_KEY must
+  // NOT be set in the dispatcher environment — its presence forces the
+  // SDK onto the API-key codepath and away from OAuth. Warn loudly if
+  // someone shipped with it set; the production runbook covers unsetting it.
+  if (process.env.ANTHROPIC_API_KEY) {
+    logger.warn(
+      { event: "dispatcher.startup.api_key_set" },
+      "ANTHROPIC_API_KEY is set in dispatcher env; spec §6.9 requires OAuth-only. Unset before production.",
+    );
   }
-  console.log("Supabase reachable.");
-
-  // Sanity check Anthropic key
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.error("ANTHROPIC_API_KEY not set.");
-    process.exit(1);
-  }
-  console.log("Anthropic key present.");
-
-  await validateAgentToolAccess();
 
   // Day 27: warn (don't fail) when credential encryption key isn't set yet.
   if (!isEncryptionKeyConfigured()) {
@@ -106,7 +44,10 @@ async function main() {
   registerCloser(async () => { await closeBrowser(); });
   registerShutdown();
 
-  startTickLoop();
+  // Plan 2 Task 5.2: boot the dispatcher (Hono + SSE) instead of the
+  // dormant ritual tick loop. Port resolves via DISPATCHER_PORT env or
+  // the dispatcher's default (3001) — see dispatcher/server.ts:resolvePort.
+  await startDispatcherServer();
 }
 
 main().catch((err) => {
