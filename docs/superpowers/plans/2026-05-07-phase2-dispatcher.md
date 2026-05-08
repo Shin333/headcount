@@ -237,7 +237,7 @@ Acceptance verification uses a non-leaf entry slug (e.g., `bradley-koh`, who has
 | `assistant` (with `tool_use` block, name=`Agent`) | persist | `handoff` (the dispatch event; `tool_use_id` keyed for Task 4.3) |
 | `assistant` (with `error` field set) | skip from project_messages; surface as `error` SSE event per Task 4.1's retry-vs-inline-inspection table | — |
 | `user` (with `parent_tool_use_id` set) | persist | `handoff` (subagent's user-side message in its own context) |
-| `user` (no `parent_tool_use_id`, contains `tool_result` blocks) | **skip** — represents tool return to parent context; chat-style dashboard surfaces the parent's next assistant message instead | — |
+| `user` (no `parent_tool_use_id`, contains `tool_result` blocks) | persist (one row per tool_result block) | `comment` — subagent's reply content; `sender_id` resolved via the unified tool_use_id map to the dispatched subagent's agent_id; `parent_message_id` chains to the handoff row via the same map |
 | `result/success` | persist | `final` (body = `result.result` field) |
 | `result/error_*` | skip from project_messages; surface as `error` SSE event per Task 4.1's table | — |
 | `rate_limit_event` | skip from project_messages; forward + log per Task 3.3 | — |
@@ -254,11 +254,12 @@ Acceptance verification uses a non-leaf entry slug (e.g., `bradley-koh`, who has
 
 **Approach.**
 
-- The `tool_use_id → run_id` map established in Task 4.1c is reused here, extended to also track `tool_use_id → message_id` for the project_messages chain.
-- On persisting a `project_messages` row whose source SDK message carries `parent_tool_use_id`, look up the corresponding parent message_id from the map and set `parent_message_id` accordingly. Set `kind = 'handoff'` for dispatch-related messages per the A4 table from Task 4.2.
-- Because Task 4.1c establishes `agent_runs.parent_run_id` natively as part of nested-row INSERT, this task no longer needs to write to `agent_runs` directly. The narrower scope is purely project_messages chain population.
+- **Unified per-run map.** Replace the two narrower maps from Task 4.1c (`tool_use_id → run_id`) and Task 4.2 (implicit `tool_use_id → message_id` via row capture) with a single record-shaped map: `tool_use_id → { nested_run_id, handoff_message_id, agent_id }`. Task 4.1c populates `nested_run_id` and `agent_id` on subagent_handoff. Task 4.2 populates `handoff_message_id` after the handoff project_messages row is INSERTed. Task 4.3 reads all three fields when persisting comment rows.
+- **Comment row INSERT.** When a `user` message with no `parent_tool_use_id` arrives carrying one or more tool_result blocks: for each block, look up the block's `tool_use_id` in the map. If found (tracked subagent dispatch): INSERT a `project_messages` row with `kind='comment'`, `body=<tool_result text content>` (extract text blocks and concatenate; JSON.stringify if non-text content surfaces), `sender_type='agent'`, `sender_id=<map entry's agent_id>`, `run_id=<map entry's nested_run_id>`, `parent_message_id=<map entry's handoff_message_id>`. If not found (entry dispatch's tool_result return — entry has no map entry per 4.1c's transparent-routing policy): skip the row.
+- **is_error flag handling.** If a tool_result block has `is_error: true`, persist the row anyway. The body conveys the failure signal; dashboard can render error-styled. Don't drop error returns.
+- **Map cleanup.** The map is per-run and discarded when the run terminates. No persistence beyond the run lifecycle.
 
-**Acceptance.** A run where Eleanor dispatches to Tsai produces two `agent_runs` rows — Eleanor's and Tsai's — with Tsai's `parent_run_id` pointing to Eleanor's `id`. The chat view shows the handoff with Tsai's response rendered as a child of Eleanor's dispatch message.
+**Acceptance.** A run where Eleanor dispatches to Tsai produces two `agent_runs` rows — Eleanor's and Tsai's — with Tsai's `parent_run_id` pointing to Eleanor's `id`. The chat view shows the handoff with Tsai's response rendered as a child of Eleanor's dispatch message via the `parent_message_id` chain on the comment row.
 
 ### Phase 4 open questions
 
