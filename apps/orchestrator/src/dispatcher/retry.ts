@@ -67,30 +67,45 @@ export async function withRetry<T>(
 // ---------------------------------------------------------------------------
 
 /**
- * Auth errors (401/403, or message matches /auth|unauthorized|forbidden/i).
+ * Auth errors (401/403, or message matches /auth|unauthorized|forbidden/i,
+ * or SDK-specific error keys `authentication_failed` / `oauth_org_not_allowed`).
+ * Also peeks at `err.cause.error` for nested SDK error shapes.
+ *
  * These never get retried — the operator needs to re-`claude auth login`.
  */
 export function defaultIsAuthError(err: unknown): boolean {
   if (err == null || typeof err !== "object") return false;
-  const e = err as { status?: unknown; message?: unknown };
+  const e = err as { status?: unknown; message?: unknown; cause?: unknown };
   if (e.status === 401 || e.status === 403) return true;
-  if (typeof e.message === "string" && /\b(auth|unauthorized|forbidden)\b/i.test(e.message)) {
-    return true;
+
+  // Collect all message strings worth scanning (top-level + nested cause).
+  const haystack: string[] = [];
+  if (typeof e.message === "string") haystack.push(e.message);
+  if (e.cause && typeof e.cause === "object") {
+    const c = e.cause as { error?: unknown; message?: unknown };
+    if (typeof c.error === "string") haystack.push(c.error);
+    if (typeof c.message === "string") haystack.push(c.message);
+  }
+  for (const m of haystack) {
+    if (/\b(auth|unauthorized|forbidden)\b/i.test(m)) return true;
+    if (/(authentication_failed|oauth_org_not_allowed)/i.test(m)) return true;
   }
   return false;
 }
 
 /**
  * Transient errors worth retrying: connection resets / timeouts, 5xx,
- * messages mentioning network/timeout/temporarily.
+ * messages mentioning network/timeout/temporarily, or SDK-specific
+ * `server_error` / `rate_limit` keys.
  */
 export function defaultIsTransient(err: unknown): boolean {
   if (err == null || typeof err !== "object") return false;
   const e = err as { code?: unknown; status?: unknown; message?: unknown };
   if (e.code === "ECONNRESET" || e.code === "ETIMEDOUT") return true;
   if (typeof e.status === "number" && e.status >= 500 && e.status < 600) return true;
-  if (typeof e.message === "string" && /(network|timeout|temporarily)/i.test(e.message)) {
-    return true;
+  if (typeof e.message === "string") {
+    if (/(network|timeout|temporarily)/i.test(e.message)) return true;
+    if (/(server_error|rate_limit)/i.test(e.message)) return true;
   }
   return false;
 }

@@ -206,6 +206,40 @@ function case5SoftSignal(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Case 6 — SDK-shape auth error fail-fast: thrown Error whose message
+// contains `authentication_failed` should be classified as auth and never
+// retried. Mirrors the predicate broadening in Phase 4 Task 4.1b Step 3.
+// ---------------------------------------------------------------------------
+async function case6SDKAuthErrorFailFast(): Promise<void> {
+  let calls = 0;
+  const start = Date.now();
+  let threw = false;
+  try {
+    await withRetry(
+      async () => {
+        calls++;
+        throw new Error("authentication_failed: bad token");
+      },
+      {
+        maxRetries: 3,
+        delays: SHORT_DELAYS,
+        isAuthError: defaultIsAuthError,
+        isTransient: defaultIsTransient,
+      },
+    );
+  } catch {
+    threw = true;
+  }
+  const elapsed = Date.now() - start;
+  const pass = threw && calls === 1 && elapsed < 50;
+  record(
+    "case 6 SDK-shape auth error fail-fast",
+    pass,
+    `calls=${calls} threw=${threw} elapsed=${elapsed}ms (expected <50ms, 1 call)`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
@@ -216,6 +250,7 @@ async function main(): Promise<void> {
   await case3RetryExhaustion();
   await case4AuthFailFast();
   case5SoftSignal();
+  await case6SDKAuthErrorFailFast();
   console.log("");
   const passed = results.filter((r) => r.pass).length;
   const total = results.length;

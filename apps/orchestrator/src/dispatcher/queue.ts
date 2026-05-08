@@ -17,6 +17,7 @@
 
 import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
+import { db } from "../db.js";
 import { logger } from "../ops/logger.js";
 import { AsyncQueue } from "./async-queue.js";
 import { runHandler } from "./run-handler.js";
@@ -37,6 +38,39 @@ import type {
 const KEEPALIVE_INTERVAL_MS = 5000;
 const DEFAULT_ENTRY_AGENT_SLUG = "eleanor-vance";
 const BUDGET_PROVIDER: BudgetProvider = "claude";
+
+// ---------------------------------------------------------------------------
+// Agent slug → agent UUID resolution (Phase 4 Task 4.1b)
+//
+// Agents are stored in the DB with `name` like "Eleanor Vance"; the slug
+// "eleanor-vance" is derived client-side. We cache the slug→uuid map at
+// module level since the agents table changes rarely (a restart refreshes).
+// ---------------------------------------------------------------------------
+const agentSlugToIdCache = new Map<string, string>();
+
+function slugifyName(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+async function resolveAgentId(slug: string): Promise<string | null> {
+  const cached = agentSlugToIdCache.get(slug);
+  if (cached) return cached;
+  const { data, error } = await db
+    .from("agents")
+    .select("id, name")
+    .eq("status", "active");
+  if (error || !data) return null;
+  for (const row of data as Array<{ id: string; name: string }>) {
+    const rowSlug = slugifyName(row.name);
+    agentSlugToIdCache.set(rowSlug, row.id);
+  }
+  return agentSlugToIdCache.get(slug) ?? null;
+}
 
 // Module-level soft-signal cluster detector. Records transient SDK errors
 // across runs; fires `dispatcher.soft_signal_cluster` once per cluster.
@@ -281,14 +315,20 @@ function pickJitterMs(): number {
 }
 
 /**
- * Drains `runHandler` into the run's AsyncQueue. Logs and forwards
- * rate_limit_event messages from the SDK as scaffolding for Phase 4
- * (the placeholder generator never emits these today).
+ * Drains `runHandler` into the run's AsyncQueue. Tracks outcome by inspecting
+ * terminal events (`run_completed` → success, `error` → failure). Returns
+ * the outcome so the worker can write the appropriate `agent_runs` UPDATE.
+ *
+ * Defaults to `failed` if the generator returns done without yielding either
+ * terminal event — conservative.
  */
 async function iterateRunHandler(
   run: QueuedRun,
   inFlightRef: { current: InFlightRun | null },
-): Promise<void> {
+): Promise<{ status: "completed" | "failed"; errorMessage?: string }> {
+  let outcome: { status: "completed" | "failed"; errorMessage?: string } = {
+    status: "failed",
+  };
   for await (const event of runHandler(run.request, run.runId)) {
     if (event.type === "rate_limit_event") {
       logger.warn(
@@ -303,7 +343,13 @@ async function iterateRunHandler(
     }
     if (inFlightRef.current) inFlightRef.current.currentSeq = event.seq;
     run.events.push(event);
+    if (event.type === "run_completed") {
+      outcome = { status: "completed" };
+    } else if (event.type === "error") {
+      outcome = { status: "failed", errorMessage: event.message };
+    }
   }
+  return outcome;
 }
 
 async function workerLoop(): Promise<void> {
@@ -385,6 +431,80 @@ async function workerLoop(): Promise<void> {
     queue.shift();
     stopKeepalive(run);
     firstRunAfterIdle = false;
+    const workerStartedAt = Date.now();
+
+    // Resolve agent_id from slug. Failure short-circuits before any SDK call,
+    // any agent_runs INSERT, or any budget increment.
+    const agentId = await resolveAgentId(run.request.entry_agent_slug);
+    if (agentId == null) {
+      run.events.push({
+        type: "run_started",
+        run_id: run.runId,
+        seq: 0,
+        timestamp: new Date().toISOString(),
+        project_id: run.request.project_id,
+        prompt: run.request.prompt,
+        entry_agent_slug: run.request.entry_agent_slug,
+      });
+      run.events.push({
+        type: "error",
+        run_id: run.runId,
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        message: `unknown agent: ${run.request.entry_agent_slug}`,
+        recoverable: false,
+      });
+      run.events.close();
+      logger.warn(
+        {
+          event: "dispatcher.unknown_agent_slug",
+          slug: run.request.entry_agent_slug,
+          run_id: run.runId,
+        },
+        "unknown agent slug; skipping run (no INSERT, no SDK, no budget increment)",
+      );
+      continue;
+    }
+
+    // INSERT agent_runs row. Failure same short-circuit semantics.
+    try {
+      const { error: insErr } = await db.from("agent_runs").insert({
+        id: run.runId,
+        agent_id: agentId,
+        project_id: run.request.project_id,
+        status: "running",
+      });
+      if (insErr) throw new Error(insErr.message);
+    } catch (e) {
+      const err = e as Error;
+      run.events.push({
+        type: "run_started",
+        run_id: run.runId,
+        seq: 0,
+        timestamp: new Date().toISOString(),
+        project_id: run.request.project_id,
+        prompt: run.request.prompt,
+        entry_agent_slug: run.request.entry_agent_slug,
+      });
+      run.events.push({
+        type: "error",
+        run_id: run.runId,
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        message: `failed to record run: ${err.message}`,
+        recoverable: false,
+      });
+      run.events.close();
+      logger.error(
+        {
+          event: "dispatcher.agent_runs_insert_error",
+          err: err.message,
+          run_id: run.runId,
+        },
+        "failed to insert agent_runs row; skipping run",
+      );
+      continue;
+    }
 
     inFlight = {
       runId: run.runId,
@@ -394,18 +514,30 @@ async function workerLoop(): Promise<void> {
     };
 
     logger.info(
-      { event: "dispatcher.run_started", run_id: run.runId, project_id: run.request.project_id },
+      {
+        event: "dispatcher.run_started",
+        run_id: run.runId,
+        project_id: run.request.project_id,
+        agent_id: agentId,
+      },
       "run started by worker",
     );
 
+    let outcome: { status: "completed" | "failed"; errorMessage?: string } = {
+      status: "failed",
+    };
+
     try {
-      // SCAFFOLDING for Phase 4. Retrying re-runs the AsyncGenerator from
-      // scratch; events already pushed to run.events would duplicate. The
-      // placeholder generator never throws so retry never fires today.
-      // Phase 4 will refactor to put retry around SDK invocation only,
-      // with iterator state preserved across attempts.
+      // Retry wraps the SDK iteration. Events emitted by run-handler before
+      // a thrown exception remain in run.events — see scaffolding note below.
+      // SCAFFOLDING for Phase 4: retrying re-runs the AsyncGenerator from
+      // scratch; events already pushed to run.events would duplicate. Real
+      // SDK throws only on stream-drop / network errors before iteration
+      // begins. SDK message-level errors (auth, rate_limit) flow as
+      // assistant.error / result/error_* events and are translated by
+      // run-handler to dispatcher `error` events without retry.
       const inFlightRef = { current: inFlight };
-      await withRetry(() => iterateRunHandler(run, inFlightRef), {
+      outcome = await withRetry(() => iterateRunHandler(run, inFlightRef), {
         maxRetries: config.maxTransientRetries,
         delays: config.transientRetryDelaysMs,
         isAuthError: defaultIsAuthError,
@@ -424,8 +556,12 @@ async function workerLoop(): Promise<void> {
         },
       });
       logger.info(
-        { event: "dispatcher.run_completed", run_id: run.runId },
-        "run completed",
+        {
+          event: "dispatcher.run_completed",
+          run_id: run.runId,
+          outcome: outcome.status,
+        },
+        outcome.status === "completed" ? "run completed" : "run ended (failed)",
       );
     } catch (err) {
       const e = err as Error;
@@ -451,19 +587,47 @@ async function workerLoop(): Promise<void> {
           : e.message ?? "internal error",
         recoverable: !auth,
       });
-    } finally {
-      run.events.close();
-      inFlight = null;
-      // Increment regardless of run outcome — the SDK session was consumed.
-      try {
-        await incrementBudget(BUDGET_PROVIDER);
-        await refreshBudgetState();
-      } catch (e) {
-        logger.error(
-          { event: "dispatcher.budget_increment_error", err: (e as Error).message },
-          "failed to increment rate_budget",
-        );
-      }
+      outcome = { status: "failed", errorMessage: e.message };
+    }
+
+    // UPDATE agent_runs row with completion metadata.
+    try {
+      const { error: updErr } = await db
+        .from("agent_runs")
+        .update({
+          status: outcome.status,
+          completed_at: new Date().toISOString(),
+          duration_ms: Date.now() - workerStartedAt,
+        })
+        .eq("id", run.runId);
+      if (updErr) throw new Error(updErr.message);
+    } catch (e) {
+      logger.error(
+        {
+          event: "dispatcher.agent_runs_update_error",
+          err: (e as Error).message,
+          run_id: run.runId,
+        },
+        "failed to UPDATE agent_runs",
+      );
+    }
+
+    run.events.close();
+    inFlight = null;
+
+    // Budget increment fires only when the SDK was actually consulted
+    // (i.e., we got past the agent-id resolution and INSERT).
+    try {
+      await incrementBudget(BUDGET_PROVIDER);
+      await refreshBudgetState();
+    } catch (e) {
+      logger.error(
+        {
+          event: "dispatcher.budget_increment_error",
+          err: (e as Error).message,
+        },
+        "failed to increment rate_budget",
+      );
     }
   }
 }
