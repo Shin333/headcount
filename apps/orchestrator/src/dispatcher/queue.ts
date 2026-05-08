@@ -303,6 +303,50 @@ interface IterationOutcome {
   errorMessage?: string;
 }
 
+/**
+ * Inserts one project_messages row. Logs + swallows on error so persistence
+ * failures don't kill the run. Returns the new row's id, or null on failure.
+ *
+ * Body NOT NULL guard: empty bodies are skipped (semantically useless rows;
+ * SDK occasionally produces empty result.result on edge paths).
+ */
+async function insertProjectMessage(args: {
+  runId: string;
+  projectId: string;
+  senderId: string;
+  kind: "output" | "handoff" | "final";
+  body: string;
+}): Promise<string | null> {
+  if (args.body.length === 0) return null;
+  try {
+    const { data, error } = await db
+      .from("project_messages")
+      .insert({
+        project_id: args.projectId,
+        sender_type: "agent",
+        sender_id: args.senderId,
+        kind: args.kind,
+        body: args.body,
+        run_id: args.runId,
+      })
+      .select("id")
+      .single();
+    if (error) throw new Error(error.message);
+    return (data as { id: string }).id;
+  } catch (e) {
+    logger.error(
+      {
+        event: "dispatcher.project_messages_insert_error",
+        err: (e as Error).message,
+        run_id: args.runId,
+        kind: args.kind,
+      },
+      "failed to insert project_messages row",
+    );
+    return null;
+  }
+}
+
 async function iterateRunHandler(
   run: QueuedRun,
   inFlightRef: { current: InFlightRun | null },
@@ -314,6 +358,21 @@ async function iterateRunHandler(
   // observed by the run-handler). Closed when the matching `tool_result`
   // arrives, or fail-flushed on terminal error / cancellation.
   const nestedRuns = new Map<string, NestedRunRecord>();
+
+  // tool_use_id → message_id of the corresponding handoff project_messages
+  // row. Populated on subagent_handoff INSERT; consumed by Task 4.3 for the
+  // parent_message_id chain. Task 4.2 builds the foundation; Task 4.3 wires
+  // up parent_message_id resolution against this map.
+  const toolUseToMessageId = new Map<string, string>();
+  void toolUseToMessageId; // silence unused-var until 4.3 reads it
+
+  // All sender attribution flows from the entry agent per the simplification
+  // documented in Plan 2 Task 4.2: empirical SDK behavior shows subagent text
+  // returns as tool_result roll-ups (never as separately-streamed assistant
+  // messages with parent_tool_use_id != null), so we never observe a
+  // different sender within a single dispatcher run. If that ever changes,
+  // sender_id resolution would consult toolUseIdToSlug → resolveAgentIdBySlug.
+  const entrySenderId = run.request.agent_id;
 
   for await (const event of runHandler(run.request, run.runId, run.abortSignal)) {
     if (event.type === "rate_limit_event") {
@@ -330,7 +389,47 @@ async function iterateRunHandler(
     if (inFlightRef.current) inFlightRef.current.currentSeq = event.seq;
     run.events.push(event);
 
+    // Per A4 mapping (Plan 2 Task 4.2): persist text-bearing dispatcher
+    // events to project_messages so the dashboard chat view can replay the
+    // conversation. tool_use / tool_result / error / rate_limit_event /
+    // queue_status / run_started / budget_exhausted have no project_messages
+    // row by design (chat view shows what the agent said, not what tooling
+    // happened around it).
+    if (event.type === "assistant_message") {
+      await insertProjectMessage({
+        runId: run.runId,
+        projectId: run.request.project_id,
+        senderId: entrySenderId,
+        kind: "output",
+        body: event.content,
+      });
+    } else if (event.type === "run_completed") {
+      const finalBody = event.final_message ?? "";
+      await insertProjectMessage({
+        runId: run.runId,
+        projectId: run.request.project_id,
+        senderId: entrySenderId,
+        kind: "final",
+        body: finalBody,
+      });
+    }
+
     if (event.type === "subagent_handoff") {
+      // Persist the handoff to project_messages BEFORE the nested
+      // agent_runs INSERT so toolUseToMessageId is populated by the time
+      // any subsequent persistence logic (Task 4.3) needs the message_id
+      // for parent_message_id chaining.
+      const handoffMessageId = await insertProjectMessage({
+        runId: run.runId,
+        projectId: run.request.project_id,
+        senderId: entrySenderId,
+        kind: "handoff",
+        body: event.invocation_prompt,
+      });
+      if (handoffMessageId != null) {
+        toolUseToMessageId.set(event.parent_tool_use_id, handoffMessageId);
+      }
+
       // Resolve agent_id for the dispatched slug. If unresolved, log + skip
       // the nested INSERT (the SSE event still flows; the map stays empty
       // for this tool_use_id, so the eventual tool_result won't UPDATE

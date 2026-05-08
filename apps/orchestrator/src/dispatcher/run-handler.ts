@@ -274,6 +274,10 @@ export async function* runHandler(
                   typeof input.subagent_type === "string"
                     ? (input.subagent_type as string)
                     : "";
+                const invocationPrompt =
+                  typeof input.prompt === "string"
+                    ? (input.prompt as string)
+                    : "";
                 if (target.length > 0) {
                   toolUseIdToSlug.set(toolUseId, target);
                 }
@@ -284,13 +288,16 @@ export async function* runHandler(
                 if (!isEntryDispatch) {
                   // True subagent dispatch (or sibling-dispatch fallback per
                   // amended plan). Emit handoff so the worker INSERTs a
-                  // nested agent_runs row.
+                  // nested agent_runs row + a kind='handoff' project_messages
+                  // row (Task 4.2). invocation_prompt body source: the
+                  // parent's Agent tool_use input.prompt field.
                   yield {
                     type: "subagent_handoff",
                     ...nextBase(),
                     from_agent_slug: fromSlug,
                     to_agent_slug: target,
                     parent_tool_use_id: toolUseId,
+                    invocation_prompt: invocationPrompt,
                   };
                 }
               }

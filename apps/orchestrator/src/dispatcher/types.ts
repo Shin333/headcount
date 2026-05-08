@@ -123,6 +123,15 @@ export interface SubagentHandoffEvent extends DispatcherSseEventBase {
   from_agent_slug: string;
   to_agent_slug: string;
   parent_tool_use_id: string;
+  /**
+   * The prompt being passed INTO the subagent's context — i.e., the
+   * `prompt` field of the parent's Agent tool_use input shape (recon Q2:
+   * `{description, subagent_type, prompt}`). Phase 4 Task 4.2 uses this to
+   * persist a `kind='handoff'` row to project_messages without re-mining
+   * the SDK's `user` invocation messages (which carry the same string but
+   * are otherwise SSE-redundant — skipped per Task 4.1c).
+   */
+  invocation_prompt: string;
 }
 
 /**
