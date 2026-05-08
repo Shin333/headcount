@@ -18,6 +18,7 @@ import { streamSSE } from "hono/streaming";
 import { serve, type ServerType } from "@hono/node-server";
 import { logger } from "../ops/logger.js";
 import { enqueue, getStatus } from "./queue.js";
+import { resolveAgentIdBySlug } from "./agent-resolver.js";
 import {
   RunRequestSchema,
   type DispatcherServerHandle,
@@ -28,6 +29,7 @@ import {
 
 const VERSION = "phase2-dispatcher-v0";
 const DEFAULT_PORT = 3001;
+const DEFAULT_ENTRY_AGENT_SLUG = "eleanor-vance";
 
 // Module-level guards for signal-handler registration. These prevent
 // double-registration if `startDispatcherServer` is called more than once
@@ -89,10 +91,48 @@ export function buildApp(): Hono {
       );
     }
 
-    // Enqueue the run. The queue assigns the runId and returns the events
-    // iterable that the worker will push into. Default entry_agent_slug
-    // resolution lives inside the queue too.
-    const { runId, events, cancel } = enqueue(parsed.data);
+    // Default + pre-resolve entry agent slug → agent_id (Phase 4 Task 4.1c).
+    // Bad slug → HTTP 400 before any queue activity, INSERT, SDK call, or
+    // budget increment. Worker downstream trusts agent_id is valid.
+    const entryAgentSlug =
+      parsed.data.entry_agent_slug ?? DEFAULT_ENTRY_AGENT_SLUG;
+    let agentId: string | null;
+    try {
+      agentId = await resolveAgentIdBySlug(entryAgentSlug);
+    } catch (e) {
+      const err = e as Error;
+      logger.error(
+        { event: "dispatcher.agent_resolver_error", err: err.message },
+        "agent-resolver failed",
+      );
+      return c.json(
+        { error: "agent_resolver_unavailable", message: err.message },
+        500,
+      );
+    }
+    if (agentId == null) {
+      logger.warn(
+        {
+          event: "dispatcher.unknown_agent_slug",
+          slug: entryAgentSlug,
+          project_id: parsed.data.project_id,
+        },
+        "unknown agent slug; rejecting at HTTP entry",
+      );
+      return c.json(
+        { error: "unknown_agent_slug", slug: entryAgentSlug },
+        400,
+      );
+    }
+
+    // Enqueue the run with pre-resolved agent_id. The queue assigns the
+    // runId and returns the events iterable that the worker will push into.
+    const { runId, events, cancel } = enqueue({
+      project_id: parsed.data.project_id,
+      prompt: parsed.data.prompt,
+      entry_agent_slug: entryAgentSlug,
+      agent_id: agentId,
+    });
 
     logger.info(
       {

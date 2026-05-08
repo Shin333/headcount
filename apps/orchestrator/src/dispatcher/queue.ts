@@ -32,45 +32,11 @@ import type {
   DispatcherSseEvent,
   QueueStatusEvent,
   QueueStatusSnapshot,
-  RunRequest,
+  ResolvedEnqueueRequest,
 } from "./types.js";
 
 const KEEPALIVE_INTERVAL_MS = 5000;
-const DEFAULT_ENTRY_AGENT_SLUG = "eleanor-vance";
 const BUDGET_PROVIDER: BudgetProvider = "claude";
-
-// ---------------------------------------------------------------------------
-// Agent slug → agent UUID resolution (Phase 4 Task 4.1b)
-//
-// Agents are stored in the DB with `name` like "Eleanor Vance"; the slug
-// "eleanor-vance" is derived client-side. We cache the slug→uuid map at
-// module level since the agents table changes rarely (a restart refreshes).
-// ---------------------------------------------------------------------------
-const agentSlugToIdCache = new Map<string, string>();
-
-function slugifyName(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-async function resolveAgentId(slug: string): Promise<string | null> {
-  const cached = agentSlugToIdCache.get(slug);
-  if (cached) return cached;
-  const { data, error } = await db
-    .from("agents")
-    .select("id, name")
-    .eq("status", "active");
-  if (error || !data) return null;
-  for (const row of data as Array<{ id: string; name: string }>) {
-    const rowSlug = slugifyName(row.name);
-    agentSlugToIdCache.set(rowSlug, row.id);
-  }
-  return agentSlugToIdCache.get(slug) ?? null;
-}
 
 // Module-level soft-signal cluster detector. Records transient SDK errors
 // across runs; fires `dispatcher.soft_signal_cluster` once per cluster.
@@ -89,15 +55,9 @@ const softSignal = createSoftSignalDetector({
   },
 });
 
-interface ResolvedRequest {
-  project_id: string;
-  prompt: string;
-  entry_agent_slug: string;
-}
-
 interface QueuedRun {
   runId: string;
-  request: ResolvedRequest;
+  request: ResolvedEnqueueRequest;
   events: AsyncQueue<DispatcherSseEvent>;
   queuedAt: string;
   cancelled: boolean;
@@ -189,22 +149,17 @@ function stopKeepalive(run: QueuedRun): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function enqueue(request: RunRequest): {
+export function enqueue(request: ResolvedEnqueueRequest): {
   runId: string;
   events: AsyncIterable<DispatcherSseEvent>;
   cancel: () => void;
 } {
   const runId = randomUUID();
-  const resolved: ResolvedRequest = {
-    project_id: request.project_id,
-    prompt: request.prompt,
-    entry_agent_slug: request.entry_agent_slug ?? DEFAULT_ENTRY_AGENT_SLUG,
-  };
   const events = new AsyncQueue<DispatcherSseEvent>();
   const queuedAt = new Date().toISOString();
   const run: QueuedRun = {
     runId,
-    request: resolved,
+    request,
     events,
     queuedAt,
     cancelled: false,
@@ -225,7 +180,7 @@ export function enqueue(request: RunRequest): {
     {
       event: "dispatcher.run_enqueued",
       run_id: runId,
-      project_id: resolved.project_id,
+      project_id: request.project_id,
       queue_length: queue.length,
     },
     "run enqueued",
@@ -433,40 +388,12 @@ async function workerLoop(): Promise<void> {
     firstRunAfterIdle = false;
     const workerStartedAt = Date.now();
 
-    // Resolve agent_id from slug. Failure short-circuits before any SDK call,
-    // any agent_runs INSERT, or any budget increment.
-    const agentId = await resolveAgentId(run.request.entry_agent_slug);
-    if (agentId == null) {
-      run.events.push({
-        type: "run_started",
-        run_id: run.runId,
-        seq: 0,
-        timestamp: new Date().toISOString(),
-        project_id: run.request.project_id,
-        prompt: run.request.prompt,
-        entry_agent_slug: run.request.entry_agent_slug,
-      });
-      run.events.push({
-        type: "error",
-        run_id: run.runId,
-        seq: 1,
-        timestamp: new Date().toISOString(),
-        message: `unknown agent: ${run.request.entry_agent_slug}`,
-        recoverable: false,
-      });
-      run.events.close();
-      logger.warn(
-        {
-          event: "dispatcher.unknown_agent_slug",
-          slug: run.request.entry_agent_slug,
-          run_id: run.runId,
-        },
-        "unknown agent slug; skipping run (no INSERT, no SDK, no budget increment)",
-      );
-      continue;
-    }
+    // agent_id is pre-resolved by the route handler (see server.ts) per Phase 4
+    // Task 4.1c. Bad slugs are rejected at HTTP entry with 400 before reaching
+    // the worker; nothing more to validate here.
+    const agentId = run.request.agent_id;
 
-    // INSERT agent_runs row. Failure same short-circuit semantics.
+    // INSERT agent_runs row. Failure short-circuits before any SDK call.
     try {
       const { error: insErr } = await db.from("agent_runs").insert({
         id: run.runId,

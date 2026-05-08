@@ -59,6 +59,20 @@ export const RunRequestSchema = z.object({
 
 export type RunRequest = z.infer<typeof RunRequestSchema>;
 
+/**
+ * The shape `enqueue()` consumes after the route has resolved the entry
+ * agent: `entry_agent_slug` is defaulted (no longer optional), and `agent_id`
+ * is the pre-resolved UUID from the live `agents` table. Phase 4 Task 4.1c
+ * moved this resolution out of the worker so bad slugs return HTTP 400
+ * immediately rather than as a deferred SSE error event.
+ */
+export interface ResolvedEnqueueRequest {
+  project_id: string;
+  prompt: string;
+  entry_agent_slug: string;
+  agent_id: string;
+}
+
 // ---------------------------------------------------------------------------
 // SSE event vocabulary
 //
