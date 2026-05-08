@@ -180,6 +180,33 @@ The retry's `defaultIsAuthError` and `defaultIsTransient` predicates need broade
 
 **Acceptance.** A single dispatched run produces exactly one row in `agent_runs` with start/end timestamps and a final status. Failed runs land with `status: 'failed'` and a captured error message.
 
+#### Task 4.1c — subagent handoff event mapping (post-4.1b)
+
+**Reason.** Task 4.1b's bounded scope shipped single-turn happy path only. Real Onepark workflows always involve subagent dispatch (Eleanor → Tsai, etc., per Spec §5.2.2). Task 4.1c implements the dispatcher-side mapping for subagent paths.
+
+**Approach.**
+
+- **Entry-dispatch detection.** Track in run-handler the FIRST `assistant` message containing an Agent tool_use whose target slug matches `entry_agent_slug`. This is the SDK main-agent → named-entry-agent dispatch per §5.2.2 and is treated as transparent routing. Emit `tool_use` (for SSE telemetry) but do NOT emit `subagent_handoff` and do NOT INSERT a nested `agent_runs` row.
+- **Subsequent Agent dispatches.** Any Agent tool_use after the entry dispatch represents a true subagent dispatch within the org-chart hierarchy. Emit `tool_use` + `subagent_handoff`. INSERT a nested `agent_runs` row with `agent_id` resolved from the dispatched slug, `parent_run_id = <entry_run_id>`, `project_id` inherited, `status = 'running'`. The nested row is updated to `status='completed'` when the subagent's terminal `tool_result` returns to the parent context (the message-#17 pattern from Task 4.1b's Step 0.5 capture: `user` with no `parent_tool_use_id`, contains `tool_result` block whose `tool_use_id` matches the dispatch).
+- **In-memory `tool_use_id → run_id` map.** Maintain for the duration of a single dispatcher run. Populated when a subagent dispatch is detected (key = the Agent tool_use's `tool_use_id`, value = the nested `run_id`). Used to resolve subsequent subagent-context messages back to the correct nested run.
+- **`user` with `parent_tool_use_id` set.** Replace the Task 4.1b deferred-skip warn path with proper handling: look up the parent run via the map, emit a dispatcher event preserving `parent_tool_use_id` for downstream attribution. The dispatcher event type should follow the A4 mapping — typically `assistant_message` for subagent text content (the SDKUserMessage's MessageParam shape may carry text or tool_result blocks; inspect content type and emit accordingly).
+- **`assistant` with `parent_tool_use_id` set.** Subagent's own assistant messages, surfaced into the parent's iterator. Emit `assistant_message` with `parent_tool_use_id` preserved on the dispatcher event for downstream attribution.
+- **Pre-resolve `agent_id` at enqueue.** Move the `agents.slug → agents.id` lookup from the worker into the route handler. If slug doesn't resolve, return HTTP 400 immediately (better UX than waiting for SSE error event). Worker is leaner; the `queue_status` keepalive triple-fire observed in Task 4.1b's Test A is reduced to zero or one keepalive event.
+
+**Acceptance.** Verification with a real Eleanor → Tsai dispatch produces: top-level `agent_runs` row attributed to Eleanor, one nested `agent_runs` row attributed to Tsai with `parent_run_id` set to Eleanor's run_id, both rows transitioning to `'completed'`. Dispatcher SSE stream includes `subagent_handoff` event for Eleanor → Tsai dispatch and `assistant_message` events with `parent_tool_use_id` preserved for Tsai's responses. No `dispatcher.deferred.subagent_user_message` warn lines.
+
+#### Task 4.1d — cancellation wiring (post-4.1c)
+
+**Reason.** Task 4.1b deferred cancellation wiring; AbortSignal from the route handler isn't currently propagating to `query.interrupt()`.
+
+**Approach.**
+
+- In the run-handler, hold a reference to the `Query` instance returned by `query()`.
+- Wire an event listener on the route's AbortSignal: when it fires, call `query.interrupt()`. The SDK then throws `AbortError` from the AsyncGenerator.
+- Worker catches AbortError and marks `agent_runs.status='cancelled'`, `completed_at=now()`, `duration_ms=<elapsed>`. Any in-progress nested rows (subagent runs that were active when cancellation hit) get the same cancelled treatment.
+
+**Acceptance.** A `curl --max-time N` mid-run produces `agent_runs.status='cancelled'` for the entry run and any nested rows. Dispatcher event stream closes cleanly. `GET /api/queue` shows `in_flight: null` post-cancellation.
+
 ### Task 4.2: `project_messages` writes from streamed events
 
 **Status:** TO DO.
@@ -217,13 +244,15 @@ The retry's `defaultIsAuthError` and `defaultIsTransient` predicates need broade
 
 **Status:** TO DO.
 
-**Reason.** When Eleanor dispatches to Tsai (or further down the chain), the resulting `agent_runs` and `project_messages` rows must attribute correctly. The Agent SDK provides a `parent_tool_use_id` field on subagent messages — Phase 2 recon confirmed.
+**Dependencies.** Task 4.1c (run-level parent map) and Task 4.2 (project_messages persistence) must land first.
+
+**Reason.** When Eleanor dispatches to Tsai (or further down the chain), the resulting `project_messages` rows must attribute correctly so the dashboard chat view can render the conversation as a tree. The Agent SDK provides a `parent_tool_use_id` field on subagent messages — Phase 2 recon confirmed. Task 4.1c establishes the `agent_runs.parent_run_id` chain natively as part of nested-row INSERT; this task narrows to the project_messages chain only.
 
 **Approach.**
 
-- Maintain an in-memory map `tool_use_id → run_id` for the duration of a session.
-- On a subagent message that carries `parent_tool_use_id`, look up the parent run and set the subagent's `agent_runs.parent_run_id` accordingly.
-- The same lookup populates `project_messages.parent_message_id` and `kind: 'handoff'` for the dispatch event.
+- The `tool_use_id → run_id` map established in Task 4.1c is reused here, extended to also track `tool_use_id → message_id` for the project_messages chain.
+- On persisting a `project_messages` row whose source SDK message carries `parent_tool_use_id`, look up the corresponding parent message_id from the map and set `parent_message_id` accordingly. Set `kind = 'handoff'` for dispatch-related messages per the A4 table from Task 4.2.
+- Because Task 4.1c establishes `agent_runs.parent_run_id` natively as part of nested-row INSERT, this task no longer needs to write to `agent_runs` directly. The narrower scope is purely project_messages chain population.
 
 **Acceptance.** A run where Eleanor dispatches to Tsai produces two `agent_runs` rows — Eleanor's and Tsai's — with Tsai's `parent_run_id` pointing to Eleanor's `id`. The chat view shows the handoff with Tsai's response rendered as a child of Eleanor's dispatch message.
 

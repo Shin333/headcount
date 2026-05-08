@@ -185,6 +185,16 @@ The user can intervene at any point: the dashboard streams each handoff event li
 
 **Implication for Phase 2 dispatcher.** The dispatcher injects `agents/registry.md` into Eleanor's session prompt at dispatch time. It does not need to consult the `agents.manager_id` graph at runtime. The `manager_id` graph is a build-time input to `migrate-agents.ts` and a render-time input to each `.md` file's organizational sections — nothing more.
 
+### 5.2.2 SDK runtime tier reality
+
+The Claude Agent SDK's `query()` function always invokes the SDK's general-purpose main agent as the primary actor. Named agents from the org chart (Eleanor, Tsai, etc.) run as subagents dispatched via the Agent tool, even when they are the intended "entry" agent for a request.
+
+In SDK-runtime terms, the org-chart tiers (exec, director, manager, associate, intern, bot) all begin at SDK tier 2. SDK tier 1 is the general-purpose main agent, which functions as a transparent prompt-routing layer and is not part of the org chart. The "delegate to lowest competent level" invariant operates as: main agent reads the prompt and dispatches to the named entry agent (typically Eleanor for orchestrator-routed work, or directly to a director / manager for cross-cutting tasks). The named entry agent is the highest-level org-chart actor for the request and may dispatch further within the org-chart hierarchy.
+
+**Persistence implication.** Top-level `agent_runs` rows are attributed to the named entry agent specified by the request, not to the SDK's main agent. The main-agent → named-entry-agent dispatch is treated as transparent routing — no nested `agent_runs` row is created for it. Subsequent dispatches by the named entry agent (e.g., Eleanor → Tsai) are recorded as nested `agent_runs` rows with `parent_run_id` chained to the entry run.
+
+**Edge case.** If the SDK main agent answers a prompt directly without dispatching (which would only occur with a malformed prompt that lacks the delegation cue), the top-level `agent_runs` row would attribute to the requested entry agent despite that agent not actually running. Onepark's prompt construction always includes the explicit "Use the Agent tool to dispatch to <slug>" cue, so this edge case is not expected to fire in production. Mitigation if it does: log a warning and accept the attribution imprecision; revisit with a sentinel main-agent record only if the corner case becomes operationally relevant.
+
 ### 5.3 Provider switchability + always-latest-model
 
 Two layers of switchability:
