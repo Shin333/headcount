@@ -141,12 +141,42 @@
 
 **Reason.** Every dispatched run gets a row for traceability — project, agent, status, timing, and parent for handoffs. This table is the source of truth for "what did the dispatcher do, when, and why."
 
+**Prerequisite migration: 0026 — `agent_runs` schema additions.**
+
+The `agent_runs` table inherited stale columns from its `agent_actions` predecessor (renamed in 0024). Plan 2's original column assumptions (`started_at`, `completed_at`, `status`) don't yet exist in the live schema. Migration 0026 adds them:
+
+```sql
+ALTER TABLE agent_runs ADD COLUMN started_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE agent_runs ADD COLUMN completed_at timestamptz;
+ALTER TABLE agent_runs ADD COLUMN status text NOT NULL DEFAULT 'running'
+  CHECK (status IN ('running','completed','failed','cancelled'));
+ALTER TABLE agent_runs ALTER COLUMN action_type SET DEFAULT 'sdk_run';
+```
+
+Legacy columns (`action_type`, `trigger`, `response`, `tool_calls`, `metadata`) are left intact. Phase 5 (entry-point swap) deletes the dormant ritual code that references them; a follow-up cleanup migration after Phase 5 removes the columns.
+
+Apply 0026 as a separate commit before the persistence wire-up commit. Verify with a column inspect on `agent_runs` post-apply.
+
 **Approach.**
 
 - Insert an `agent_runs` row on `run_started` with `status: 'running'`.
 - Update on `run_completed` with end timestamp and final status.
-- Capture `runtime` field — `claude-code` for Agent SDK runs, leaving room for `codex` fallback later.
-- Column set is the one from the 0024 amendment: `id`, `agent_id`, `project_id`, `runtime`, `parent_run_id`, `started_at`, `completed_at`, `status` (and any others present in the live schema).
+- Capture `runtime` field — `claude_code` for Agent SDK runs, leaving room for `codex` fallback later. Runtime value matches the CHECK constraint added in 0024 (one of `'claude_code'`, `'codex'`, `'codex_fallback'`).
+- Column set is the one from the 0024 amendment plus 0026: `id`, `agent_id`, `project_id`, `runtime`, `parent_run_id`, `started_at`, `completed_at`, `status` (and any others present in the live schema).
+
+**Retry vs. inline error inspection.** The Phase 3 `withRetry` wrapper around the runHandler iteration is preserved but its scope narrows for Phase 4: it catches only stream-drop / network errors that propagate as thrown exceptions before or during AsyncGenerator iteration (e.g., the underlying HTTP/SSE connection dropping). The SDK does not throw for message-level errors — it streams them as `SDKAssistantMessage.error` fields, `SDKResultError` subtypes, and `SDKRateLimitEvent` messages. These are inspected per-message during iteration and translated into terminal dispatcher events without retry:
+
+| SDK message pattern | Dispatcher action |
+|---|---|
+| `SDKAssistantMessage.error === 'authentication_failed' \| 'oauth_org_not_allowed'` | Emit `error` event with `recoverable: false` and operator-friendly "run `claude auth login`" message. End run. Mark `agent_runs.status = 'failed'`. |
+| `SDKAssistantMessage.error === 'rate_limit'` | Emit `error` event with `recoverable: true`. End run. Mark `agent_runs.status = 'failed'`. |
+| `SDKAssistantMessage.error === 'billing_error'` | Emit `error` event with `recoverable: false`. End run. Mark `agent_runs.status = 'failed'`. |
+| `SDKAssistantMessage.error === 'server_error' \| 'unknown' \| 'invalid_request'` | Emit `error` event with `recoverable: true`. End run. Mark `agent_runs.status = 'failed'`. |
+| `SDKResultError` (any subtype) | Emit `error` event with details from `errors[]` and `terminal_reason`. End run. Mark `agent_runs.status = 'failed'`. |
+| `SDKRateLimitEvent` | Forward to client SSE stream as `rate_limit_event` (Task 3.3 scaffolding); log warn line; do NOT terminate run — informational. |
+| `AbortError` thrown | End run. Mark `agent_runs.status = 'cancelled'`. |
+
+The retry's `defaultIsAuthError` and `defaultIsTransient` predicates need broadening to match SDK error shapes per the table above. Update is part of Task 4.1's persistence wire-up commit.
 
 **Acceptance.** A single dispatched run produces exactly one row in `agent_runs` with start/end timestamps and a final status. Failed runs land with `status: 'failed'` and a captured error message.
 
@@ -162,7 +192,24 @@
 - `sender_type` is `agent` for SDK output, `user` for the inbound prompt that initiated the run.
 - Populate `run_id` (FK to `agent_runs`) and `parent_message_id` from event metadata.
 - Preserve message ordering via `created_at` — write rows in stream-arrival order.
-- **Message type filter** (per Task 1.2 stream observations). **Persist** these SDK message types: `assistant` text content → `kind: 'output'`; `assistant` tool_use blocks targeting the `Agent` tool → `kind: 'handoff'`; `user` messages with `parent_tool_use_id` (subagent context) → `kind: 'handoff'` attributed to the parent; `result` with `subtype: 'success'` → `kind: 'final'`. **Skip** these as host-only telemetry: `system/init`, `system/hook_*`, `system/task_started`, `system/task_notification`, `system/notification`. `rate_limit_event` is handled by Task 3.3 separately.
+
+**Message-type persistence rules** (derived from the Task 1.2 smoke-test taxonomy). Each SDK message variant gets one explicit disposition:
+
+| SDK message type / subtype | Persisted? | `project_messages.kind` |
+|---|---|---|
+| `system/init` | skip | — |
+| `system/hook_started`, `system/hook_progress`, `system/hook_response` | skip | — |
+| `system/task_started`, `system/task_notification`, `system/task_updated`, `system/task_progress` | skip | — |
+| `system/notification`, `system/auth_status` | skip | — |
+| `system/compact_boundary`, `system/mirror_error` | skip | — |
+| `assistant` (text content, no error) | persist | `output` |
+| `assistant` (with `tool_use` block, name=`Agent`) | persist | `handoff` (the dispatch event; `tool_use_id` keyed for Task 4.3) |
+| `assistant` (with `error` field set) | skip from project_messages; surface as `error` SSE event per Task 4.1's retry-vs-inline-inspection table | — |
+| `user` (with `parent_tool_use_id` set) | persist | `handoff` (subagent's user-side message in its own context) |
+| `user` (no `parent_tool_use_id`, contains `tool_result` blocks) | **skip** — represents tool return to parent context; chat-style dashboard surfaces the parent's next assistant message instead | — |
+| `result/success` | persist | `final` (body = `result.result` field) |
+| `result/error_*` | skip from project_messages; surface as `error` SSE event per Task 4.1's table | — |
+| `rate_limit_event` | skip from project_messages; forward + log per Task 3.3 | — |
 
 **Acceptance.** Replaying a run's `project_messages` rows in `created_at` order reconstructs the conversation faithfully — every assistant message and handoff is captured, in order.
 
@@ -179,6 +226,13 @@
 - The same lookup populates `project_messages.parent_message_id` and `kind: 'handoff'` for the dispatch event.
 
 **Acceptance.** A run where Eleanor dispatches to Tsai produces two `agent_runs` rows — Eleanor's and Tsai's — with Tsai's `parent_run_id` pointing to Eleanor's `id`. The chat view shows the handoff with Tsai's response rendered as a child of Eleanor's dispatch message.
+
+### Phase 4 open questions
+
+Items the recon couldn't answer, to be resolved during execution:
+
+- **`SDKAssistantMessage.error` termination behavior** — when this field is populated, does the AsyncGenerator continue yielding messages, or does it terminate? Affects whether we end the run on observation or wait for the next `result`. Resolve empirically by triggering an auth failure during Task 4.1 verification.
+- **`session_id` field persistence** — every SDK message carries `session_id`. Useful for correlating retries across restarts. Plan 2 doesn't currently persist it; consider adding to `agent_runs.metadata` if Phase 4 verification surfaces a use case.
 
 ---
 
@@ -206,6 +260,18 @@
 **Approach.**
 
 - Gut `main()`'s startup checks that reference dropped state — `world_clock`, `agent.tool_access`, `agent.mcp_access`.
+- Delete the existing `if (!process.env.ANTHROPIC_API_KEY) exit(1)` check in `apps/orchestrator/src/index.ts:main()`. Per spec §6.9, the dispatcher uses Claude Max OAuth credentials and `ANTHROPIC_API_KEY` must NOT be set in the dispatcher environment. Replace with:
+
+  ```ts
+  if (process.env.ANTHROPIC_API_KEY) {
+    logger.warn(
+      { event: 'dispatcher.startup.api_key_set' },
+      "ANTHROPIC_API_KEY is set in dispatcher env; spec §6.9 requires OAuth-only. Unset before production."
+    );
+  }
+  ```
+
+  The check inverts: warn if set, allow startup. Production runbook covers the unset step.
 - Keep the encryption-key warning (still relevant for `agent_credentials`) and the shutdown registration.
 - Swap the call to `startTickLoop()` for `startDispatcherServer()` from the new dispatcher module.
 
