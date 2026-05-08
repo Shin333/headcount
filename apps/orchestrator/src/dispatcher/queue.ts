@@ -21,6 +21,7 @@ import { db } from "../db.js";
 import { logger } from "../ops/logger.js";
 import { AsyncQueue } from "./async-queue.js";
 import { runHandler } from "./run-handler.js";
+import { resolveAgentIdBySlug } from "./agent-resolver.js";
 import { checkBudget, incrementBudget, type BudgetProvider } from "./budget.js";
 import {
   withRetry,
@@ -277,6 +278,18 @@ function pickJitterMs(): number {
  * Defaults to `failed` if the generator returns done without yielding either
  * terminal event — conservative.
  */
+/**
+ * Per-run state for nested agent_runs lifecycle (Phase 4 Task 4.1c). Built
+ * up as `subagent_handoff` events flow by; consulted on `tool_result` to
+ * close the matching nested row, and on terminal `error` to fail any
+ * leftovers.
+ */
+interface NestedRunRecord {
+  runId: string;
+  agentSlug: string;
+  startedAt: number;
+}
+
 async function iterateRunHandler(
   run: QueuedRun,
   inFlightRef: { current: InFlightRun | null },
@@ -284,6 +297,13 @@ async function iterateRunHandler(
   let outcome: { status: "completed" | "failed"; errorMessage?: string } = {
     status: "failed",
   };
+
+  // tool_use_id of an Agent dispatch → nested run record. Populated when a
+  // `subagent_handoff` event arrives (i.e., a non-entry Agent tool_use was
+  // observed by the run-handler). Closed when the matching `tool_result`
+  // arrives, or fail-flushed on terminal error.
+  const nestedRuns = new Map<string, NestedRunRecord>();
+
   for await (const event of runHandler(run.request, run.runId)) {
     if (event.type === "rate_limit_event") {
       logger.warn(
@@ -298,12 +318,158 @@ async function iterateRunHandler(
     }
     if (inFlightRef.current) inFlightRef.current.currentSeq = event.seq;
     run.events.push(event);
+
+    if (event.type === "subagent_handoff") {
+      // Resolve agent_id for the dispatched slug. If unresolved, log + skip
+      // the nested INSERT (the SSE event still flows; the map stays empty
+      // for this tool_use_id, so the eventual tool_result won't UPDATE
+      // anything — acceptable degradation).
+      let agentId: string | null = null;
+      try {
+        agentId = await resolveAgentIdBySlug(event.to_agent_slug);
+      } catch (e) {
+        logger.error(
+          {
+            event: "dispatcher.agent_resolver_error",
+            run_id: event.run_id,
+            err: (e as Error).message,
+          },
+          "agent-resolver failed during subagent_handoff",
+        );
+      }
+      if (agentId == null) {
+        logger.warn(
+          {
+            event: "dispatcher.unknown_subagent_slug",
+            slug: event.to_agent_slug,
+            tool_use_id: event.parent_tool_use_id,
+            run_id: event.run_id,
+          },
+          "unknown subagent slug; skipping nested agent_runs INSERT",
+        );
+      } else {
+        const nestedRunId = randomUUID();
+        const startedAt = Date.now();
+        try {
+          const { error: insErr } = await db.from("agent_runs").insert({
+            id: nestedRunId,
+            agent_id: agentId,
+            project_id: run.request.project_id,
+            parent_run_id: run.runId,
+            status: "running",
+          });
+          if (insErr) throw new Error(insErr.message);
+          nestedRuns.set(event.parent_tool_use_id, {
+            runId: nestedRunId,
+            agentSlug: event.to_agent_slug,
+            startedAt,
+          });
+          logger.info(
+            {
+              event: "dispatcher.nested_run_started",
+              run_id: nestedRunId,
+              parent_run_id: run.runId,
+              agent_slug: event.to_agent_slug,
+              tool_use_id: event.parent_tool_use_id,
+            },
+            "nested run started",
+          );
+        } catch (e) {
+          logger.error(
+            {
+              event: "dispatcher.nested_agent_runs_insert_error",
+              err: (e as Error).message,
+              parent_run_id: run.runId,
+              slug: event.to_agent_slug,
+            },
+            "failed to insert nested agent_runs row",
+          );
+        }
+      }
+    } else if (event.type === "tool_result") {
+      // Look up the matching nested run, if any. Non-Agent tool_results
+      // (Bash, Read, etc.) won't be in the map — that's fine, no-op.
+      const rec = nestedRuns.get(event.tool_use_id);
+      if (rec) {
+        nestedRuns.delete(event.tool_use_id);
+        const completionStatus = event.is_error ? "failed" : "completed";
+        try {
+          const { error: updErr } = await db
+            .from("agent_runs")
+            .update({
+              status: completionStatus,
+              completed_at: new Date().toISOString(),
+              duration_ms: Date.now() - rec.startedAt,
+            })
+            .eq("id", rec.runId);
+          if (updErr) throw new Error(updErr.message);
+          logger.info(
+            {
+              event: "dispatcher.nested_run_completed",
+              run_id: rec.runId,
+              parent_run_id: run.runId,
+              agent_slug: rec.agentSlug,
+              status: completionStatus,
+            },
+            "nested run completed",
+          );
+        } catch (e) {
+          logger.error(
+            {
+              event: "dispatcher.nested_agent_runs_update_error",
+              err: (e as Error).message,
+              run_id: rec.runId,
+            },
+            "failed to UPDATE nested agent_runs row",
+          );
+        }
+      }
+    }
+
     if (event.type === "run_completed") {
       outcome = { status: "completed" };
     } else if (event.type === "error") {
       outcome = { status: "failed", errorMessage: event.message };
     }
   }
+
+  // Failsafe: any nested rows still in 'running' (subagent didn't return
+  // before the entry run terminated, e.g., terminal SDK error) get marked
+  // failed so the table doesn't carry stale 'running' rows.
+  if (nestedRuns.size > 0) {
+    const completedAt = new Date().toISOString();
+    for (const [, rec] of nestedRuns) {
+      try {
+        await db
+          .from("agent_runs")
+          .update({
+            status: "failed",
+            completed_at: completedAt,
+            duration_ms: Date.now() - rec.startedAt,
+          })
+          .eq("id", rec.runId);
+        logger.warn(
+          {
+            event: "dispatcher.nested_run_orphaned",
+            run_id: rec.runId,
+            parent_run_id: run.runId,
+            agent_slug: rec.agentSlug,
+          },
+          "nested run orphaned by entry-run termination; marked failed",
+        );
+      } catch (e) {
+        logger.error(
+          {
+            event: "dispatcher.nested_orphan_update_error",
+            err: (e as Error).message,
+            run_id: rec.runId,
+          },
+          "failed to UPDATE orphaned nested agent_runs row",
+        );
+      }
+    }
+  }
+
   return outcome;
 }
 

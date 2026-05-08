@@ -1,18 +1,27 @@
 // ============================================================================
-// dispatcher/run-handler.ts — Real SDK invocation (Phase 4 Task 4.1b).
+// dispatcher/run-handler.ts — Real SDK invocation with subagent attribution
+// (Phase 4 Tasks 4.1b + 4.1c).
 //
-// Bounded scope: single-turn happy path. Subagent attribution + cancellation
-// deferred to 4.1c / 4.1d. Mapping table is in Plan 2 Task 4.1 (post-amendment).
+// Streams events from the Claude Agent SDK via `query()`, mapping per the
+// bounded table in Plan 2 Task 4.1c (post-amendment per Step 0 SDK recon).
 //
-// Today: emit `assistant_message` / `tool_use` / `tool_result` / `run_completed`
-// / `error` / `rate_limit_event`. Subagent `user` messages with
-// `parent_tool_use_id` are skipped with a warn line so the deferral surfaces
-// in logs.
+// Entry-dispatch detection (Task 4.1c). The SDK general-purpose main agent
+// is "tier 1" per Spec §5.2.2; its first Agent dispatch into the named entry
+// agent is transparent routing — emit `tool_use` for SSE telemetry but no
+// `subagent_handoff` and no nested agent_runs row. Detection criterion:
+//   (a) message.parent_tool_use_id == null  (from main agent context)
+//   (b) block.input.subagent_type == request.entry_agent_slug
+//   (c) it is the first Agent tool_use of the run
+// All three required to avoid false-matching an inner dispatch that
+// coincidentally targets the entry slug.
 //
-// `agent_slug` on assistant/tool_use events is approximated as
-// `request.entry_agent_slug` for now (the real SDK actor is the
-// general-purpose main agent, not Eleanor herself). Task 4.1c handles
-// proper attribution via `parent_tool_use_id` mapping.
+// Subagent attribution. The run-handler maintains `toolUseIdToSlug` so that
+// when a nested Agent tool_use is observed (parent_tool_use_id != null on
+// the assistant message), the `from_agent_slug` on the emitted
+// `subagent_handoff` reflects the actual dispatching agent. The SDK delivers
+// subagent text exclusively via `tool_result` blocks on top-level `user`
+// messages (per Step 0 recon); we never see subagent text as a separately-
+// streamed `assistant` event.
 // ============================================================================
 
 import { existsSync } from "node:fs";
@@ -40,7 +49,7 @@ function findRepoRoot(): string {
 const REPO_ROOT = findRepoRoot();
 
 // ---------------------------------------------------------------------------
-// Resolved request shape (entry_agent_slug already defaulted by queue.ts)
+// Resolved request shape (entry_agent_slug already defaulted by route)
 // ---------------------------------------------------------------------------
 export interface ResolvedRunRequest {
   project_id: string;
@@ -51,8 +60,7 @@ export interface ResolvedRunRequest {
 // ---------------------------------------------------------------------------
 // Prompt builder — wraps user prompt with a delegation cue so the SDK's
 // general-purpose main agent dispatches to the named subagent. Mirrors
-// Task 1.2's smoke-test pattern. Phase 4 open question: whether the SDK
-// will eventually expose an explicit entry_agent option.
+// Task 1.2's smoke-test pattern.
 // ---------------------------------------------------------------------------
 function buildPrompt(request: ResolvedRunRequest): string {
   return (
@@ -62,8 +70,8 @@ function buildPrompt(request: ResolvedRunRequest): string {
 }
 
 // ---------------------------------------------------------------------------
-// Error classification — maps SDKAssistantMessage.error keys and
-// SDKResultError subtypes per the Phase 4 amendment A3 table.
+// Error classification — maps SDKAssistantMessage.error keys per the
+// Plan 2 Phase 4 amendment A3 table.
 // ---------------------------------------------------------------------------
 function classifyAssistantError(errKey: string): {
   message: string;
@@ -118,7 +126,7 @@ interface RateLimitMessageShape {
 }
 
 // ---------------------------------------------------------------------------
-// runHandler — real impl
+// runHandler — emits dispatcher SSE events from a single SDK query().
 // ---------------------------------------------------------------------------
 export async function* runHandler(
   request: ResolvedRunRequest,
@@ -141,6 +149,16 @@ export async function* runHandler(
     entry_agent_slug: request.entry_agent_slug,
   };
 
+  // Per-run state for entry-dispatch detection + attribution.
+  let agentDispatchCount = 0;
+  // tool_use_id of an Agent dispatch → the slug of the spawned subagent.
+  // Used to resolve `from_agent_slug` on nested subagent_handoff events:
+  // when an inner Agent tool_use appears with parent_tool_use_id=X, the
+  // dispatching agent's slug is `toolUseIdToSlug.get(X)`.
+  const toolUseIdToSlug = new Map<string, string>();
+  // One-shot guards for unexpected-shape warns.
+  let warnedSubagentAssistant = false;
+
   let terminated = false;
 
   try {
@@ -151,7 +169,7 @@ export async function* runHandler(
       if (terminated) break;
       const m = message as Record<string, unknown> & { type: string };
 
-      // SKIP: all system/* messages (init, hook_*, task_*, notification, auth_status, ...)
+      // SKIP: all system/* messages (init, hook_*, task_*, notification, ...)
       if (m.type === "system") continue;
 
       // ASSISTANT
@@ -171,6 +189,31 @@ export async function* runHandler(
           break;
         }
 
+        // Empirically the SDK does NOT surface subagent assistant text into
+        // the parent iterator (Step 0 recon — subagent text returns via
+        // tool_result on top-level `user` messages instead). If a future SDK
+        // version starts surfacing it, log a one-time warn and skip.
+        if (am.parent_tool_use_id != null) {
+          if (!warnedSubagentAssistant) {
+            warnedSubagentAssistant = true;
+            logger.warn(
+              {
+                event: "dispatcher.unexpected.subagent_assistant_message",
+                run_id: runId,
+                parent_tool_use_id: am.parent_tool_use_id,
+              },
+              "subagent assistant message observed (not expected per Phase 4 recon); revisit handling",
+            );
+          }
+          continue;
+        }
+
+        // From-agent attribution: parent_tool_use_id == null means we're in
+        // the SDK main agent's context. Per Spec §5.2.2 the entry dispatch
+        // is transparent routing, so all post-entry main-agent activity is
+        // attributed to the entry agent.
+        const fromSlug = request.entry_agent_slug;
+
         const content = am.message?.content;
         if (Array.isArray(content)) {
           let textBuf = "";
@@ -183,26 +226,57 @@ export async function* runHandler(
                 yield {
                   type: "assistant_message",
                   ...nextBase(),
-                  agent_slug: request.entry_agent_slug,
+                  agent_slug: fromSlug,
                   content: textBuf,
                 };
                 textBuf = "";
               }
+              const toolName = (b.name as string | undefined) ?? "?";
+              const toolUseId = (b.id as string | undefined) ?? "";
               yield {
                 type: "tool_use",
                 ...nextBase(),
-                agent_slug: request.entry_agent_slug,
-                tool_name: (b.name as string | undefined) ?? "?",
-                tool_use_id: (b.id as string | undefined) ?? "",
+                agent_slug: fromSlug,
+                tool_name: toolName,
+                tool_use_id: toolUseId,
                 input: b.input ?? {},
               };
+
+              // Dispatch detection: only the Agent tool spawns subagents.
+              if (toolName === "Agent") {
+                agentDispatchCount++;
+                const input = (b.input as Record<string, unknown> | undefined) ?? {};
+                const target =
+                  typeof input.subagent_type === "string"
+                    ? (input.subagent_type as string)
+                    : "";
+                if (target.length > 0) {
+                  toolUseIdToSlug.set(toolUseId, target);
+                }
+                const isEntryDispatch =
+                  agentDispatchCount === 1 &&
+                  am.parent_tool_use_id == null &&
+                  target === request.entry_agent_slug;
+                if (!isEntryDispatch) {
+                  // True subagent dispatch (or sibling-dispatch fallback per
+                  // amended plan). Emit handoff so the worker INSERTs a
+                  // nested agent_runs row.
+                  yield {
+                    type: "subagent_handoff",
+                    ...nextBase(),
+                    from_agent_slug: fromSlug,
+                    to_agent_slug: target,
+                    parent_tool_use_id: toolUseId,
+                  };
+                }
+              }
             }
           }
           if (textBuf.length > 0) {
             yield {
               type: "assistant_message",
               ...nextBase(),
-              agent_slug: request.entry_agent_slug,
+              agent_slug: fromSlug,
               content: textBuf,
             };
           }
@@ -214,21 +288,17 @@ export async function* runHandler(
       if (m.type === "user") {
         const um = m as unknown as UserMessageShape;
 
-        // Subagent context message — DEFERRED to 4.1c
+        // user with parent_tool_use_id != null carries the invocation prompt
+        // INTO the subagent (verbatim copy of the parent's Agent tool_use
+        // input.prompt). Redundant with the parent's tool_use event from the
+        // SSE consumer's perspective. Skip from SSE; Task 4.2 will persist
+        // these as kind='handoff' in project_messages.
         if (um.parent_tool_use_id != null) {
-          logger.warn(
-            {
-              event: "dispatcher.deferred.subagent_user_message",
-              run_id: runId,
-              parent_tool_use_id: um.parent_tool_use_id,
-            },
-            "subagent user message; persistence deferred to Task 4.1c",
-          );
           continue;
         }
 
-        // Top-level user message carrying tool_result blocks (subagent
-        // returned to parent context).
+        // Top-level user message — typically carries tool_result blocks
+        // (the subagent or any tool returning to the parent context).
         const content = um.message?.content;
         if (Array.isArray(content)) {
           for (const block of content) {
