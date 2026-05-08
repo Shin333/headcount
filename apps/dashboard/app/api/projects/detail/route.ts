@@ -38,7 +38,7 @@ export async function GET() {
   for (const p of projects ?? []) {
     // Members with agent info
     const { data: members } = await db
-      .from("project_members")
+      .from("project_participants")
       .select("agent_id")
       .eq("project_id", p.id);
 

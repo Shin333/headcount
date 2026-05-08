@@ -34,7 +34,7 @@ export async function GET() {
   const enriched = [];
   for (const p of projects ?? []) {
     const { count } = await db
-      .from("project_members")
+      .from("project_participants")
       .select("agent_id", { count: "exact", head: true })
       .eq("project_id", p.id);
 
