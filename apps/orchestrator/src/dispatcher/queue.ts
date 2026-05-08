@@ -63,6 +63,10 @@ interface QueuedRun {
   queuedAt: string;
   cancelled: boolean;
   keepaliveTimer: NodeJS.Timeout | null;
+  /** Route's AbortSignal (Phase 4 Task 4.1d). When this fires, the SDK
+   *  query() inside run-handler aborts and emits a `cancelled: true` error
+   *  event that the worker translates to `agent_runs.status='cancelled'`. */
+  abortSignal?: AbortSignal;
 }
 
 interface InFlightRun {
@@ -150,7 +154,10 @@ function stopKeepalive(run: QueuedRun): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function enqueue(request: ResolvedEnqueueRequest): {
+export function enqueue(
+  request: ResolvedEnqueueRequest,
+  abortSignal?: AbortSignal,
+): {
   runId: string;
   events: AsyncIterable<DispatcherSseEvent>;
   cancel: () => void;
@@ -165,6 +172,7 @@ export function enqueue(request: ResolvedEnqueueRequest): {
     queuedAt,
     cancelled: false,
     keepaliveTimer: null,
+    abortSignal,
   };
 
   queue.push(run);
@@ -290,21 +298,24 @@ interface NestedRunRecord {
   startedAt: number;
 }
 
+interface IterationOutcome {
+  status: "completed" | "failed" | "cancelled";
+  errorMessage?: string;
+}
+
 async function iterateRunHandler(
   run: QueuedRun,
   inFlightRef: { current: InFlightRun | null },
-): Promise<{ status: "completed" | "failed"; errorMessage?: string }> {
-  let outcome: { status: "completed" | "failed"; errorMessage?: string } = {
-    status: "failed",
-  };
+): Promise<IterationOutcome> {
+  let outcome: IterationOutcome = { status: "failed" };
 
   // tool_use_id of an Agent dispatch → nested run record. Populated when a
   // `subagent_handoff` event arrives (i.e., a non-entry Agent tool_use was
   // observed by the run-handler). Closed when the matching `tool_result`
-  // arrives, or fail-flushed on terminal error.
+  // arrives, or fail-flushed on terminal error / cancellation.
   const nestedRuns = new Map<string, NestedRunRecord>();
 
-  for await (const event of runHandler(run.request, run.runId)) {
+  for await (const event of runHandler(run.request, run.runId, run.abortSignal)) {
     if (event.type === "rate_limit_event") {
       logger.warn(
         {
@@ -429,33 +440,44 @@ async function iterateRunHandler(
     if (event.type === "run_completed") {
       outcome = { status: "completed" };
     } else if (event.type === "error") {
-      outcome = { status: "failed", errorMessage: event.message };
+      outcome = {
+        status: event.cancelled === true ? "cancelled" : "failed",
+        errorMessage: event.message,
+      };
     }
   }
 
   // Failsafe: any nested rows still in 'running' (subagent didn't return
-  // before the entry run terminated, e.g., terminal SDK error) get marked
-  // failed so the table doesn't carry stale 'running' rows.
+  // before the entry run terminated). If the entry was cancelled, propagate
+  // 'cancelled' to the orphans (the user disconnect implicitly cancels every
+  // nested subagent that was still running). Otherwise mark them 'failed' so
+  // the table doesn't carry stale 'running' rows.
   if (nestedRuns.size > 0) {
+    const orphanStatus = outcome.status === "cancelled" ? "cancelled" : "failed";
     const completedAt = new Date().toISOString();
     for (const [, rec] of nestedRuns) {
       try {
+        // Only flip rows that are still 'running' — guards against
+        // overwriting nested rows that completed normally between the last
+        // tool_result and the entry-run cancellation.
         await db
           .from("agent_runs")
           .update({
-            status: "failed",
+            status: orphanStatus,
             completed_at: completedAt,
             duration_ms: Date.now() - rec.startedAt,
           })
-          .eq("id", rec.runId);
+          .eq("id", rec.runId)
+          .eq("status", "running");
         logger.warn(
           {
             event: "dispatcher.nested_run_orphaned",
             run_id: rec.runId,
             parent_run_id: run.runId,
             agent_slug: rec.agentSlug,
+            status: orphanStatus,
           },
-          "nested run orphaned by entry-run termination; marked failed",
+          `nested run orphaned by entry-run termination; marked ${orphanStatus}`,
         );
       } catch (e) {
         logger.error(
@@ -616,9 +638,7 @@ async function workerLoop(): Promise<void> {
       "run started by worker",
     );
 
-    let outcome: { status: "completed" | "failed"; errorMessage?: string } = {
-      status: "failed",
-    };
+    let outcome: IterationOutcome = { status: "failed" };
 
     try {
       // Retry wraps the SDK iteration. Events emitted by run-handler before
@@ -654,7 +674,11 @@ async function workerLoop(): Promise<void> {
           run_id: run.runId,
           outcome: outcome.status,
         },
-        outcome.status === "completed" ? "run completed" : "run ended (failed)",
+        outcome.status === "completed"
+          ? "run completed"
+          : outcome.status === "cancelled"
+            ? "run cancelled mid-flight"
+            : "run ended (failed)",
       );
     } catch (err) {
       const e = err as Error;
@@ -709,17 +733,30 @@ async function workerLoop(): Promise<void> {
     inFlight = null;
 
     // Budget increment fires only when the SDK was actually consulted
-    // (i.e., we got past the agent-id resolution and INSERT).
-    try {
-      await incrementBudget(BUDGET_PROVIDER);
-      await refreshBudgetState();
-    } catch (e) {
-      logger.error(
+    // (i.e., we got past the agent-id resolution and INSERT) AND the run
+    // was not user-cancelled. Cancelled runs partial-burn API tokens but
+    // we don't count them against the daily cap (user-friendlier; revisit
+    // if budget accuracy becomes operationally important — Plan 2 Task 4.1d).
+    if (outcome.status !== "cancelled") {
+      try {
+        await incrementBudget(BUDGET_PROVIDER);
+        await refreshBudgetState();
+      } catch (e) {
+        logger.error(
+          {
+            event: "dispatcher.budget_increment_error",
+            err: (e as Error).message,
+          },
+          "failed to increment rate_budget",
+        );
+      }
+    } else {
+      logger.info(
         {
-          event: "dispatcher.budget_increment_error",
-          err: (e as Error).message,
+          event: "dispatcher.budget_skip_cancelled",
+          run_id: run.runId,
         },
-        "failed to increment rate_budget",
+        "skipping budget increment for cancelled run",
       );
     }
   }

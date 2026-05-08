@@ -127,10 +127,19 @@ interface RateLimitMessageShape {
 
 // ---------------------------------------------------------------------------
 // runHandler — emits dispatcher SSE events from a single SDK query().
+//
+// `signal` (optional) is the route handler's AbortSignal (i.e.,
+// `c.req.raw.signal`). When the client disconnects (or the route otherwise
+// aborts), this signal fires and we forward it into the SDK via a local
+// AbortController on `query()`'s options. The SDK then throws inside the
+// for-await; we catch and emit a terminal `error` event with
+// `cancelled: true` so the worker can persist `agent_runs.status='cancelled'`
+// instead of `'failed'`. Plan 2 Task 4.1d.
 // ---------------------------------------------------------------------------
 export async function* runHandler(
   request: ResolvedRunRequest,
   runId: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<DispatcherSseEvent> {
   const startedAt = Date.now();
   let seq = 0;
@@ -161,10 +170,25 @@ export async function* runHandler(
 
   let terminated = false;
 
+  // Forward the route's AbortSignal into the SDK via a local controller.
+  // The SDK accepts an AbortController instance (not a signal) on
+  // `options.abortController` — pattern verified in
+  // migrations/foundation/sdk-smoke-test.ts.
+  const abortController = new AbortController();
+  if (signal) {
+    if (signal.aborted) {
+      abortController.abort();
+    } else {
+      signal.addEventListener("abort", () => abortController.abort(), {
+        once: true,
+      });
+    }
+  }
+
   try {
     for await (const message of query({
       prompt: buildPrompt(request),
-      options: { cwd: REPO_ROOT },
+      options: { cwd: REPO_ROOT, abortController },
     })) {
       if (terminated) break;
       const m = message as Record<string, unknown> & { type: string };
@@ -371,6 +395,19 @@ export async function* runHandler(
     }
   } catch (e) {
     const err = e as Error;
+    // Cancellation: detect by our own controller's state, not by `err.name`
+    // (the SDK's AbortError class isn't a stable export). If our controller
+    // is aborted at catch time, this throw was caused by the cancel path.
+    if (abortController.signal.aborted) {
+      yield {
+        type: "error",
+        ...nextBase(),
+        message: "cancelled",
+        recoverable: false,
+        cancelled: true,
+      };
+      return;
+    }
     yield {
       type: "error",
       ...nextBase(),

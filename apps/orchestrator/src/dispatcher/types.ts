@@ -178,6 +178,13 @@ export interface ErrorEvent extends DispatcherSseEventBase {
   type: "error";
   message: string;
   recoverable: boolean;
+  /**
+   * True iff this error originated from a user/client cancellation
+   * (route's AbortSignal fired). Distinguishes user-cancelled runs from
+   * auth/transient/billing errors per Plan 2 Phase 4 amendment A3 table.
+   * Absent → not a cancellation (normal error semantics).
+   */
+  cancelled?: boolean;
 }
 
 export type DispatcherSseEvent =

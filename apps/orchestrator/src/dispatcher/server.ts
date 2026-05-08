@@ -125,14 +125,29 @@ export function buildApp(): Hono {
       );
     }
 
+    // The route's AbortSignal fires when the client disconnects (Hono's Node
+    // adapter wires this from http.IncomingMessage close events). It serves
+    // two purposes:
+    //   1. Pre-flight cancel via `cancel()` hook — if the run is still
+    //      queued, it's removed and events are closed cleanly (Task 3.1).
+    //   2. Mid-flight cancel via `enqueue(..., abortSignal)` — the queue
+    //      forwards the signal into run-handler's SDK invocation, aborting
+    //      the in-flight `query()` and emitting a cancelled-flagged error
+    //      event the worker translates to `agent_runs.status='cancelled'`
+    //      (Task 4.1d).
+    const abortSignal = c.req.raw.signal as AbortSignal | undefined;
+
     // Enqueue the run with pre-resolved agent_id. The queue assigns the
     // runId and returns the events iterable that the worker will push into.
-    const { runId, events, cancel } = enqueue({
-      project_id: parsed.data.project_id,
-      prompt: parsed.data.prompt,
-      entry_agent_slug: entryAgentSlug,
-      agent_id: agentId,
-    });
+    const { runId, events, cancel } = enqueue(
+      {
+        project_id: parsed.data.project_id,
+        prompt: parsed.data.prompt,
+        entry_agent_slug: entryAgentSlug,
+        agent_id: agentId,
+      },
+      abortSignal,
+    );
 
     logger.info(
       {
@@ -143,13 +158,6 @@ export function buildApp(): Hono {
       "run accepted",
     );
 
-    // If the client disconnects, signal cancel. Hono's underlying Request
-    // exposes an AbortSignal that fires on disconnect (when the platform
-    // adapter wires it through — Node adapter does so via http.IncomingMessage
-    // close events). If the run hasn't started yet, cancel removes it from
-    // the queue. If mid-run, the worker is allowed to finish so persistence
-    // (Phase 4) records the full run.
-    const abortSignal = c.req.raw.signal;
     if (abortSignal) {
       abortSignal.addEventListener("abort", cancel, { once: true });
     }
