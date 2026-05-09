@@ -3,7 +3,13 @@ import { z } from "zod";
 const ServerEnvSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
-  ANTHROPIC_API_KEY: z.string().min(1),
+  // Schema-optional per spec §6.9: Claude Max OAuth requires
+  // ANTHROPIC_API_KEY to be UNSET in the runtime environment.
+  // No LIVE code reads env.ANTHROPIC_API_KEY (the legacy consumer
+  // was deleted in Plan 5 commit 90a0b8f). Field retained as
+  // optional + min(1)-when-present so accidental empty-string
+  // values still fail validation.
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
   TENANT_ID: z.string().uuid(),
   TICK_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
   // Day 9d: wall-time sync. The simulation clock is the wall clock; there is

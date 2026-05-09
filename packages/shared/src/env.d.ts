@@ -2,7 +2,7 @@ import { z } from "zod";
 declare const ServerEnvSchema: z.ZodObject<{
     SUPABASE_URL: z.ZodString;
     SUPABASE_SERVICE_ROLE_KEY: z.ZodString;
-    ANTHROPIC_API_KEY: z.ZodString;
+    ANTHROPIC_API_KEY: z.ZodOptional<z.ZodString>;
     TENANT_ID: z.ZodString;
     TICK_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
     SPEED_MULTIPLIER: z.ZodDefault<z.ZodNumber>;
@@ -21,7 +21,6 @@ declare const ServerEnvSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     SUPABASE_URL: string;
     SUPABASE_SERVICE_ROLE_KEY: string;
-    ANTHROPIC_API_KEY: string;
     TENANT_ID: string;
     TICK_INTERVAL_MS: number;
     SPEED_MULTIPLIER: number;
@@ -33,6 +32,7 @@ declare const ServerEnvSchema: z.ZodObject<{
     REFLECTION_WALL_INTERVAL_HOURS: number;
     CHATTER_ENABLED: boolean;
     SUPABASE_STORAGE_BUCKET: string;
+    ANTHROPIC_API_KEY?: string | undefined;
     TAVILY_API_KEY?: string | undefined;
     GEMINI_API_KEY?: string | undefined;
     CRED_ENCRYPTION_KEY?: string | undefined;
@@ -40,8 +40,8 @@ declare const ServerEnvSchema: z.ZodObject<{
 }, {
     SUPABASE_URL: string;
     SUPABASE_SERVICE_ROLE_KEY: string;
-    ANTHROPIC_API_KEY: string;
     TENANT_ID: string;
+    ANTHROPIC_API_KEY?: string | undefined;
     TICK_INTERVAL_MS?: number | undefined;
     SPEED_MULTIPLIER?: number | undefined;
     DAILY_TOKEN_CAP?: number | undefined;
