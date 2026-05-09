@@ -15,6 +15,46 @@
 
 ---
 
+## Amendments
+
+### Amendment 2026-05-09 — Main-router pivot (post-Task 5.3 attempt 1)
+
+**Why.**
+
+Task 5.3 attempt 1 (2026-05-09) failed Gate 3 even after Eleanor's persona received an explicit dispatch directive (Plan 1 amendment, commit `6feb081`). Empirical finding: the Claude Agent SDK does not expose the Agent tool to a subagent at runtime, regardless of what the subagent's `.claude/agents/<slug>.md` frontmatter `tools:` line declares. Nested dispatch (subagent → subagent) is not the SDK's intended pattern.
+
+The "entry agent" concept Plan 2 originally adopted (dispatcher resolves an `entry_agent_slug`, wraps the SDK call to dispatch into that agent) put every persona-bearing agent into a subagent context where they cannot dispatch further. The empirically successful path in Phase 4 verification was always the SDK main agent improvising sibling dispatches around the entry — non-deterministic and architecturally backwards.
+
+**What changes.**
+
+The SDK's main agent becomes the dispatcher's router. Personas (Eleanor, Tsai, Tessa, …) are subagents the main agent dispatches to based on prompt content. There is no "entry agent" — there is a user prompt, the main agent, and a flat namespace of dispatchable subagents.
+
+Concretely:
+
+1. **New sentinel agent `main-router`** with id `00000000-0000-0000-0000-00000000ma1n`. Persona: "You are the dispatcher router. Read the user's request, choose the most appropriate department head or specialist subagent via the Agent tool, and synthesize their response. Never answer from your own context — always dispatch."
+
+2. **Migration 0027** inserts the `main-router` row into `agents`. `department=NULL`, `role='router'`, `tier='system'`, `status='active'`. `.claude/agents/main-router.md` carries the persona; `tools:` frontmatter is `Agent` (and `Read` / `Grep` if useful for routing).
+
+3. **`/api/run` accepts `entry_agent_slug` as an optional HINT** for the main agent's prompt prefix ("the user is addressing `<display_name>`") but no longer wraps the SDK call with a "Use the Agent tool to dispatch to X" instruction. Default behaviour is pass-through: user prompt goes to the SDK main agent verbatim.
+
+4. **Run handler:** root `agent_runs` row uses `main-router`'s id as `agent_id`. Nested dispatches the main agent fires land as children with `parent_run_id = root run id`. Phase 4's `tool_use_id` map machinery is unchanged.
+
+5. **Phase 4 transparent-routing logic:** the "skip entry-dispatch tool_result" branch becomes dead code (no entry dispatch to elide). It can be removed in the same commit, or left as a defensive no-op until Plan 5.
+
+**Task 5.3 acceptance — amended.**
+
+Replace gate 3 from "agent_runs has Eleanor (parent) + ≥1 subagent (child)" with:
+
+> [ ] `agent_runs` has `main-router` (root, `parent_run_id NULL`) + ≥1 dept-head child (`parent_run_id = root run id`), all completed.
+
+Other gates unchanged.
+
+**Plan 5.1 expansion — dashboard 0024-schema-drift sweep.**
+
+Task 5.1 was scoped tightly to `project_members → project_participants` in `apps/dashboard/`. The full 0024 migration also renamed columns on `project_messages` (`agent_id → sender_id`, `message_type → kind`) and dropped `is_pinned`. The dashboard's `apps/dashboard/app/api/project/[id]/messages/route.ts` and likely other routes still reference the old names. Hotfix scope expansion handled in this same amendment cycle (separate commit); not blocking the main-router pivot but blocking Task 5.3 Gate 4 verification.
+
+---
+
 ## Phase 1: SDK foundation
 
 ### Task 1.1: Install `@anthropic-ai/claude-agent-sdk`
