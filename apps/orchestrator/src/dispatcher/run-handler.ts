@@ -28,6 +28,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { logger } from "../ops/logger.js";
+import { MAIN_ROUTER_SYSTEM_PROMPT } from "./main-router-prompt.js";
 import type { DispatcherSseEvent } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -49,24 +50,34 @@ function findRepoRoot(): string {
 const REPO_ROOT = findRepoRoot();
 
 // ---------------------------------------------------------------------------
-// Resolved request shape (entry_agent_slug already defaulted by route)
+// Resolved request shape. Per Plan 2 amendment 2026-05-09 (main-router pivot),
+// `entry_agent_slug` is optional — when set, run-handler appends a one-line
+// hint to the SDK system prompt so the main agent dispatches to that agent
+// first; when absent, the main agent routes from prompt content alone.
 // ---------------------------------------------------------------------------
 export interface ResolvedRunRequest {
   project_id: string;
   prompt: string;
-  entry_agent_slug: string;
+  entry_agent_slug?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Prompt builder — wraps user prompt with a delegation cue so the SDK's
-// general-purpose main agent dispatches to the named subagent. Mirrors
-// Task 1.2's smoke-test pattern.
-// ---------------------------------------------------------------------------
-function buildPrompt(request: ResolvedRunRequest): string {
-  return (
-    `Use the Agent tool to dispatch to the ${request.entry_agent_slug} subagent. ` +
-    request.prompt
-  );
+/**
+ * Builds the SDK `systemPrompt` value for a run. Always appends
+ * MAIN_ROUTER_SYSTEM_PROMPT to the `claude_code` preset (preserving the
+ * preset's Agent-tool wiring + tool registry). When the request carries a
+ * persona-hint slug, an additional one-line directive nudges the main agent
+ * to dispatch there first.
+ */
+function buildSystemPrompt(request: ResolvedRunRequest): {
+  type: "preset";
+  preset: "claude_code";
+  append: string;
+} {
+  let append = MAIN_ROUTER_SYSTEM_PROMPT;
+  if (request.entry_agent_slug) {
+    append += `\n\nThe user is addressing ${request.entry_agent_slug} directly; dispatch to ${request.entry_agent_slug} first.`;
+  }
+  return { type: "preset", preset: "claude_code", append };
 }
 
 // ---------------------------------------------------------------------------
@@ -221,8 +232,12 @@ export async function* runHandler(
 
   try {
     for await (const message of query({
-      prompt: buildPrompt(request),
-      options: { cwd: REPO_ROOT, abortController },
+      prompt: request.prompt,
+      options: {
+        cwd: REPO_ROOT,
+        abortController,
+        systemPrompt: buildSystemPrompt(request),
+      },
     })) {
       if (terminated) break;
       const m = message as Record<string, unknown> & { type: string };
@@ -267,10 +282,13 @@ export async function* runHandler(
         }
 
         // From-agent attribution: parent_tool_use_id == null means we're in
-        // the SDK main agent's context. Per Spec §5.2.2 the entry dispatch
-        // is transparent routing, so all post-entry main-agent activity is
-        // attributed to the entry agent.
-        const fromSlug = request.entry_agent_slug;
+        // the SDK main agent's context. Per Plan 2 amendment 2026-05-09
+        // (main-router pivot), the main agent IS the dispatcher's router,
+        // so root-context narration attributes to the main-router sentinel
+        // (slug "main-router"). For subagent contexts (parent_tool_use_id
+        // != null), `from_agent_slug` would resolve via `toolUseIdToSlug`,
+        // but empirically no such message has been observed.
+        const fromSlug = "main-router";
 
         const content = am.message?.content;
         if (Array.isArray(content)) {
@@ -315,10 +333,15 @@ export async function* runHandler(
                 if (target.length > 0) {
                   toolUseIdToSlug.set(toolUseId, target);
                 }
-                const isEntryDispatch =
-                  agentDispatchCount === 1 &&
-                  am.parent_tool_use_id == null &&
-                  target === request.entry_agent_slug;
+                // Per Plan 2 amendment 2026-05-09 (main-router pivot): the
+                // SDK main agent is now the dispatcher's router and there is
+                // no transparent "entry dispatch" to elide — every Agent
+                // tool_use is a real subagent dispatch deserving a nested
+                // agent_runs row + handoff project_messages row. The
+                // elision branch below is left as a defensive no-op
+                // (always false) for git-blame continuity; remove in a
+                // Plan 5 cleanup pass.
+                const isEntryDispatch = false;
                 if (!isEntryDispatch) {
                   // True subagent dispatch (or sibling-dispatch fallback per
                   // amended plan). Emit handoff so the worker INSERTs a

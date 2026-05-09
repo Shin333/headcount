@@ -22,6 +22,7 @@ import { logger } from "../ops/logger.js";
 import { AsyncQueue } from "./async-queue.js";
 import { runHandler } from "./run-handler.js";
 import { resolveAgentIdBySlug } from "./agent-resolver.js";
+import { MAIN_ROUTER_SENTINEL_ID } from "./main-router-prompt.js";
 import { checkBudget, incrementBudget, type BudgetProvider } from "./budget.js";
 import {
   withRetry,
@@ -384,9 +385,12 @@ async function iterateRunHandler(
   // SubagentDispatchRecord docstring for incremental-population timeline.
   const toolUseDispatch = new Map<string, SubagentDispatchRecord>();
 
-  // Entry-agent sender id — used for output/handoff/final rows. Subagent
-  // comment rows resolve sender via the dispatch record's agentId instead.
-  const entrySenderId = run.request.agent_id;
+  // Per Plan 2 amendment 2026-05-09 (main-router pivot): root-level
+  // assistant narration (kind=output/final/handoff) is the SDK main agent's
+  // routing voice, attributed to the main-router sentinel. Per-subagent
+  // comment rows continue to attribute to the dispatched persona via
+  // toolUseDispatch.agentId (Task 4.3 — unchanged).
+  const entrySenderId = MAIN_ROUTER_SENTINEL_ID;
 
   for await (const event of runHandler(run.request, run.runId, run.abortSignal)) {
     if (event.type === "rate_limit_event") {
@@ -712,10 +716,12 @@ async function workerLoop(): Promise<void> {
     firstRunAfterIdle = false;
     const workerStartedAt = Date.now();
 
-    // agent_id is pre-resolved by the route handler (see server.ts) per Phase 4
-    // Task 4.1c. Bad slugs are rejected at HTTP entry with 400 before reaching
-    // the worker; nothing more to validate here.
-    const agentId = run.request.agent_id;
+    // Per Plan 2 amendment 2026-05-09 (main-router pivot): the root
+    // agent_runs row is always anchored to the main-router sentinel so
+    // hierarchies have a stable root distinct from any persona dept-head.
+    // The hint slug/id (if any) is consumed downstream by run-handler to
+    // prefix the SDK's system prompt.
+    const agentId = MAIN_ROUTER_SENTINEL_ID;
 
     // INSERT agent_runs row. Failure short-circuits before any SDK call.
     try {

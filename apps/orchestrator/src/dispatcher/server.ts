@@ -29,7 +29,13 @@ import {
 
 const VERSION = "phase2-dispatcher-v0";
 const DEFAULT_PORT = 3001;
-const DEFAULT_ENTRY_AGENT_SLUG = "eleanor-vance";
+
+// Per Plan 2 amendment 2026-05-09 (main-router pivot): the dispatcher no
+// longer defaults `entry_agent_slug` to a persona. When the user doesn't
+// specify, the SDK main agent routes based on prompt content alone via
+// MAIN_ROUTER_SYSTEM_PROMPT. The aliases below let callers explicitly opt
+// into "no hint" without omitting the field.
+const MAIN_ROUTER_ALIASES = new Set(["main-router", "router"]);
 
 // Module-level guards for signal-handler registration. These prevent
 // double-registration if `startDispatcherServer` is called more than once
@@ -91,38 +97,46 @@ export function buildApp(): Hono {
       );
     }
 
-    // Default + pre-resolve entry agent slug → agent_id (Phase 4 Task 4.1c).
-    // Bad slug → HTTP 400 before any queue activity, INSERT, SDK call, or
-    // budget increment. Worker downstream trusts agent_id is valid.
-    const entryAgentSlug =
-      parsed.data.entry_agent_slug ?? DEFAULT_ENTRY_AGENT_SLUG;
-    let agentId: string | null;
-    try {
-      agentId = await resolveAgentIdBySlug(entryAgentSlug);
-    } catch (e) {
-      const err = e as Error;
-      logger.error(
-        { event: "dispatcher.agent_resolver_error", err: err.message },
-        "agent-resolver failed",
-      );
-      return c.json(
-        { error: "agent_resolver_unavailable", message: err.message },
-        500,
-      );
-    }
-    if (agentId == null) {
-      logger.warn(
-        {
-          event: "dispatcher.unknown_agent_slug",
-          slug: entryAgentSlug,
-          project_id: parsed.data.project_id,
-        },
-        "unknown agent slug; rejecting at HTTP entry",
-      );
-      return c.json(
-        { error: "unknown_agent_slug", slug: entryAgentSlug },
-        400,
-      );
+    // Resolve the optional entry-agent hint per Plan 2 amendment 2026-05-09
+    // (main-router pivot). When the user specifies a persona-bearing slug,
+    // resolve it to an id so run-handler can append a one-line hint to the
+    // SDK's system prompt. When omitted (or aliased to main-router/router),
+    // there's no hint — the main agent routes from prompt content alone.
+    // Bad slug (specified but unresolvable) still returns HTTP 400.
+    const requestedSlug = parsed.data.entry_agent_slug;
+    let hintSlug: string | undefined;
+    let hintAgentId: string | undefined;
+    if (requestedSlug != null && !MAIN_ROUTER_ALIASES.has(requestedSlug)) {
+      let resolved: string | null;
+      try {
+        resolved = await resolveAgentIdBySlug(requestedSlug);
+      } catch (e) {
+        const err = e as Error;
+        logger.error(
+          { event: "dispatcher.agent_resolver_error", err: err.message },
+          "agent-resolver failed",
+        );
+        return c.json(
+          { error: "agent_resolver_unavailable", message: err.message },
+          500,
+        );
+      }
+      if (resolved == null) {
+        logger.warn(
+          {
+            event: "dispatcher.unknown_agent_slug",
+            slug: requestedSlug,
+            project_id: parsed.data.project_id,
+          },
+          "unknown agent slug; rejecting at HTTP entry",
+        );
+        return c.json(
+          { error: "unknown_agent_slug", slug: requestedSlug },
+          400,
+        );
+      }
+      hintSlug = requestedSlug;
+      hintAgentId = resolved;
     }
 
     // The route's AbortSignal fires when the client disconnects (Hono's Node
@@ -137,14 +151,15 @@ export function buildApp(): Hono {
     //      (Task 4.1d).
     const abortSignal = c.req.raw.signal as AbortSignal | undefined;
 
-    // Enqueue the run with pre-resolved agent_id. The queue assigns the
-    // runId and returns the events iterable that the worker will push into.
+    // Enqueue the run. Per the main-router pivot, the root `agent_runs.agent_id`
+    // is always the main-router sentinel (set inside queue.ts); the hint is
+    // informational so run-handler can prefix the SDK system prompt.
     const { runId, events, cancel } = enqueue(
       {
         project_id: parsed.data.project_id,
         prompt: parsed.data.prompt,
-        entry_agent_slug: entryAgentSlug,
-        agent_id: agentId,
+        entry_agent_slug: hintSlug,
+        hint_agent_id: hintAgentId,
       },
       abortSignal,
     );

@@ -60,17 +60,27 @@ export const RunRequestSchema = z.object({
 export type RunRequest = z.infer<typeof RunRequestSchema>;
 
 /**
- * The shape `enqueue()` consumes after the route has resolved the entry
- * agent: `entry_agent_slug` is defaulted (no longer optional), and `agent_id`
- * is the pre-resolved UUID from the live `agents` table. Phase 4 Task 4.1c
- * moved this resolution out of the worker so bad slugs return HTTP 400
- * immediately rather than as a deferred SSE error event.
+ * The shape `enqueue()` consumes after the route has resolved the (optional)
+ * entry-agent hint. Per Plan 2 amendment 2026-05-09 (main-router pivot):
+ *
+ *   - The root `agent_runs` row always uses the main-router sentinel id as
+ *     `agent_id`; the hint is informational only.
+ *   - `entry_agent_slug` and `hint_agent_id` are present iff the user
+ *     explicitly named a persona-bearing agent. When set, run-handler
+ *     appends a one-line hint to the SDK's system prompt so the main agent
+ *     dispatches to that agent first. When absent, the main agent routes
+ *     based on the user prompt content alone.
+ *   - Bad slugs (specified but unresolvable) still return HTTP 400 at the
+ *     route handler — the user explicitly asked for an agent that doesn't
+ *     exist.
  */
 export interface ResolvedEnqueueRequest {
   project_id: string;
   prompt: string;
-  entry_agent_slug: string;
-  agent_id: string;
+  /** Slug of a persona-bearing entry hint agent, if user specified one. */
+  entry_agent_slug?: string;
+  /** Resolved id of the entry hint agent, paired with `entry_agent_slug`. */
+  hint_agent_id?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +104,10 @@ export interface RunStartedEvent extends DispatcherSseEventBase {
   type: "run_started";
   project_id: string;
   prompt: string;
-  entry_agent_slug: string;
+  /** Optional persona-bearing entry hint slug if the user named one. Per
+   *  Plan 2 amendment 2026-05-09 (main-router pivot), absent means the
+   *  SDK main agent routes from prompt content alone. */
+  entry_agent_slug?: string;
 }
 
 export interface AssistantMessageEvent extends DispatcherSseEventBase {
