@@ -1,6 +1,6 @@
 # Plan 5 — Legacy orchestrator cleanup
 
-**Status:** Phases 1–3 DONE; Phase 4 TODO
+**Status:** DONE (2026-05-09)
 **Started:** 2026-05-09
 **Predecessor:** Plan 2 (commit `b92aea0` on `feat/claude-code-rearchitecture`)
 
@@ -54,7 +54,7 @@ Plan 5 Phase 1 recon (2026-05-09) traced 19 files reachable from `src/index.ts` 
 
 ### Phase 4 — Schema cleanup migration
 
-**Status:** TODO (separate session).
+**Status:** DONE (commit `e05937a`, migration 0028 applied to live DB).
 
 **Reason.** Migration 0028 drops the legacy columns on `agent_runs` that Plan 2 kept intact intentionally for backward-compat with the dormant ritual code: `action_type` (and its DEFAULT `'sdk_run'`), `trigger`, `response`, `tool_calls`, `metadata`. Phases 1–3 remove every consumer of those columns; the schema can shed them safely.
 
