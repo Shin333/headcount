@@ -1,6 +1,6 @@
 # Plan 5 — Legacy orchestrator cleanup
 
-**Status:** ACTIVE
+**Status:** Phases 1–3 DONE; Phase 4 TODO
 **Started:** 2026-05-09
 **Predecessor:** Plan 2 (commit `b92aea0` on `feat/claude-code-rearchitecture`)
 
@@ -24,7 +24,7 @@ Plan 5 Phase 1 recon (2026-05-09) traced 19 files reachable from `src/index.ts` 
 
 ### Phase 1 — Ritual / world / tick cluster
 
-**Status:** IN PROGRESS.
+**Status:** DONE (commit `2b768d8`, 21 files, −4375 lines).
 
 **Reason.** Files imported only via the deleted `startTickLoop` entry point. All references to the dropped tables `world_clock`, `forum_posts`, `dms`, `commitments`, `ritual_state` live in this cluster.
 
@@ -34,21 +34,21 @@ Plan 5 Phase 1 recon (2026-05-09) traced 19 files reachable from `src/index.ts` 
 
 ### Phase 2 — Legacy-runner cluster
 
-**Status:** IN PROGRESS.
+**Status:** DONE (commit `90a0b8f`, 39 files, −8172 lines).
 
 **Reason.** Files reachable only via `src/agents/runner.ts`, the legacy Anthropic-API-direct runner the dispatcher replaced. Includes the agent-context machinery (memory, personality, vision, etc.), the tool registry the runner exposed, and tool implementations that only the runner imported.
 
-**Files (~28).** `src/agents/*` (7 files: `context-builder.ts`, `memory.ts`, `personality.ts`, `recent-work.ts`, `roster-context.ts`, `runner.ts`, `vision.ts`), `src/tools/*` non-LIVE (~19 files — everything except `browser.ts` and `types.ts` which are LIVE), `src/util/untrusted.ts`, `src/util/supabase-storage.ts`, `src/auth/google-oauth.ts`, `src/projects/members.ts`, `src/reports/*` (6 files), plus top-level `runner.ts` and `claude.ts`.
+**Files (~39).** `src/agents/*` (7 files: `context-builder.ts`, `memory.ts`, `personality.ts`, `recent-work.ts`, `roster-context.ts`, `runner.ts`, `vision.ts`), `src/tools/*` non-LIVE (20 files — everything except `browser.ts` and `types.ts` which are LIVE), `src/util/untrusted.ts`, `src/util/supabase-storage.ts`, `src/auth/google-oauth.ts`, `src/projects/members.ts`, `src/reports/*` (6 files), plus top-level `runner.ts` and `claude.ts`.
 
 **Acceptance.** `tsc --noEmit` baseline drops by the 2 errors that lived in `agents/runner.ts` (cache_control SDK API mismatch). Zero new errors in LIVE files.
 
 ### Phase 3 — Seed-script cluster
 
-**Status:** IN PROGRESS.
+**Status:** DONE (commit `bdbe9cc`, 55 files, −8627 lines).
 
 **Reason.** `src/seed/*` — one-shot migration scripts that have already run productively against the live DB. Audit trail preserved in git history. None are imported by LIVE; deleting doesn't affect anything in production.
 
-**Files (~50).** All of `src/seed/*`.
+**Files (55).** All of `src/seed/*.ts`.
 
 **Acceptance.** `tsc --noEmit` reports the same baseline as after Phase 2; seed scripts had no errors but they're standalone so no change expected.
 
