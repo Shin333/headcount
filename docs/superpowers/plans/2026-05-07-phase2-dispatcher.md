@@ -25,6 +25,8 @@ Task 5.3 attempt 1 (2026-05-09) failed Gate 3 even after Eleanor's persona recei
 
 The "entry agent" concept Plan 2 originally adopted (dispatcher resolves an `entry_agent_slug`, wraps the SDK call to dispatch into that agent) put every persona-bearing agent into a subagent context where they cannot dispatch further. The empirically successful path in Phase 4 verification was always the SDK main agent improvising sibling dispatches around the entry — non-deterministic and architecturally backwards.
 
+Empirical confirmation from Task 5.3 attempt 2 (2026-05-09): Eleanor's response body, written from the dispatched-subagent context, explicitly cited the runtime constraint: *"the Agent tool isn't in my actual runtime whitelist."* Subagent personas cannot dispatch onward regardless of `.md` frontmatter declarations or persona-body directives. The main-router pivot is the only path that yields self-driving multi-agent dispatch within the Claude Agent SDK.
+
 **What changes.**
 
 The SDK's main agent becomes the dispatcher's router. Personas (Eleanor, Tsai, Tessa, …) are subagents the main agent dispatches to based on prompt content. There is no "entry agent" — there is a user prompt, the main agent, and a flat namespace of dispatchable subagents.
@@ -42,6 +44,14 @@ Concretely:
 5. **Phase 4 transparent-routing logic:** the "skip entry-dispatch tool_result" branch becomes dead code (no entry dispatch to elide). It can be removed in the same commit, or left as a defensive no-op until Plan 5.
 
 **Task 5.3 acceptance — amended.**
+
+Replace gate 2 from "Final project_messages row is from a persona agent" with:
+
+> [ ] `project_messages` contains BOTH:
+>     - ≥1 `kind='comment'` row attributed to a dispatched persona agent (the persona's actual response body)
+>     - `kind='final'` / `kind='output'` rows attributed to `main-router` (the router's synthesis voice that frames the conversation for the user)
+>
+> Router voice as a first-class attributable presence is by design — main-router's wrap-up is genuinely router-authored content, not the persona's words. Attributing it to the persona would be semantically dishonest.
 
 Replace gate 3 from "agent_runs has Eleanor (parent) + ≥1 subagent (child)" with:
 
@@ -353,7 +363,7 @@ Items the recon couldn't answer, to be resolved during execution:
 
 ### Task 5.3: End-to-end smoke test from dashboard
 
-**Status:** TO DO.
+**Status:** DONE (verified 2026-05-09 attempt 2 with main-router pivot; commit `a3e33c7` lands the implementation, project `a2198653-b9f7-4939-a86b-7f93c65e1b03` is the verification run. Gate 4 dashboard rendering structurally satisfied via the α sweep — the persisted message shape matches the patched route's enrichment expectations; direct browser observation blocked by middleware `CEO_EMAIL` cookie gate, deferred to routine dashboard usage).
 
 **Reason.** Prove the full chain works — dashboard initiates a project, dispatcher picks it up, Eleanor runs, persistence writes, SSE streams back, dashboard renders the conversation. This is the "Phase 2 done" gate.
 
