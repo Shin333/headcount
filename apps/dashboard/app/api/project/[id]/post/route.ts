@@ -61,14 +61,17 @@ export async function POST(
     return NextResponse.json({ error: "Project is not active" }, { status: 400 });
   }
 
-  // Insert the channel message
+  // Insert the channel message.
+  // 0024 renamed agent_id→sender_id, message_type→kind (with backfill
+  // mapping 'message' → 'comment'); sender_type is now NOT NULL.
   const { data: inserted, error: insertErr } = await db
     .from("project_messages")
     .insert({
       project_id: projectId,
-      agent_id: CEO_SENTINEL_ID,
+      sender_id: CEO_SENTINEL_ID,
+      sender_type: "agent",
       body: messageBody,
-      message_type: "message",
+      kind: "comment",
     })
     .select("id, created_at")
     .single();

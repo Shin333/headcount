@@ -39,34 +39,20 @@ export async function POST(
     .update({ status: "completed", updated_at: new Date().toISOString() })
     .eq("id", projectId);
 
-  // Resolve pending commitments
-  const { data: pending } = await db
-    .from("commitments")
-    .select("id")
-    .eq("project_id", projectId)
-    .eq("status", "pending");
+  // 0024 dropped commitments; Plan 3 rebuild. Resolved count is always 0
+  // here so the celebration body uses the no-commitments wording below.
+  const resolvedCount = 0;
 
-  let resolvedCount = 0;
-  if (pending && pending.length > 0) {
-    await db
-      .from("commitments")
-      .update({
-        status: "resolved",
-        resolution_type: "manual",
-        resolved_at: new Date().toISOString(),
-      })
-      .eq("project_id", projectId)
-      .eq("status", "pending");
-    resolvedCount = pending.length;
-  }
-
-  // Post celebration
+  // Post celebration.
+  // 0024 renamed agent_id→sender_id, message_type→kind (with backfill
+  // mapping 'system' → 'comment'); sender_type is now NOT NULL.
   const CEO_ID = "00000000-0000-0000-0000-00000000ce00";
   await db.from("project_messages").insert({
     project_id: projectId,
-    agent_id: CEO_ID,
+    sender_id: CEO_ID,
+    sender_type: "agent",
     body: `🎉 **Project "${project.title}" is complete!** All work is shipped. ${resolvedCount > 0 ? `${resolvedCount} remaining commitment(s) auto-resolved.` : ""} Great work, team.`,
-    message_type: "system",
+    kind: "comment",
   });
 
   return NextResponse.json({

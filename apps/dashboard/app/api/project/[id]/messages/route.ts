@@ -40,10 +40,12 @@ export async function GET(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  // Fetch messages (newest first for display, client can reverse)
+  // Fetch messages (newest first for display, client can reverse).
+  // 0024 renamed agent_id→sender_id, message_type→kind, dropped is_pinned.
+  // Response shape preserved below for stable UI consumption (Plan 5.1 α).
   const { data: messages, error: msgErr } = await db
     .from("project_messages")
-    .select("id, agent_id, body, message_type, created_at, is_pinned")
+    .select("id, sender_id, body, kind, created_at")
     .eq("project_id", projectId)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -53,7 +55,7 @@ export async function GET(
   }
 
   // Resolve agent names
-  const agentIds = Array.from(new Set((messages ?? []).map((m: any) => m.agent_id)));
+  const agentIds = Array.from(new Set((messages ?? []).map((m: any) => m.sender_id)));
   const agentNames = new Map<string, string>();
   agentNames.set(CEO_SENTINEL_ID, "Shin Park");
 
@@ -68,15 +70,18 @@ export async function GET(
     }
   }
 
-  // Enrich messages with names
+  // Enrich messages with names. Response keys (agentId, messageType,
+  // isPinned) preserved for stable UI consumption — `messageType` is now
+  // sourced from `kind` (no value translation; consumer just renders),
+  // `isPinned` is hardcoded false (column dropped in 0024; Plan 3 rebuild).
   const enriched = (messages ?? []).map((m: any) => ({
     id: m.id,
-    agentId: m.agent_id,
-    agentName: agentNames.get(m.agent_id) ?? `Agent ${m.agent_id.slice(0, 8)}`,
+    agentId: m.sender_id,
+    agentName: agentNames.get(m.sender_id) ?? `Agent ${m.sender_id.slice(0, 8)}`,
     body: m.body,
-    messageType: m.message_type,
+    messageType: m.kind,
     createdAt: m.created_at,
-    isPinned: m.is_pinned ?? false,
+    isPinned: false,
   }));
 
   return NextResponse.json({

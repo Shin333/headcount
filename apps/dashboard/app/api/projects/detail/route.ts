@@ -49,20 +49,13 @@ export async function GET() {
       .select("id, name, role, department, tier")
       .in("id", memberIds.length > 0 ? memberIds : ["__none__"]);
 
-    // Commitments
-    const { data: commitments } = await db
-      .from("commitments")
-      .select("id, description, agent_id, status, deadline_at, nudge_count, created_at")
-      .eq("project_id", p.id)
-      .order("created_at", { ascending: false })
-      .limit(20);
-
-    const pending = (commitments ?? []).filter((c: any) => c.status === "pending");
-    const overdue = pending.filter(
-      (c: any) => c.deadline_at && new Date(c.deadline_at) < new Date()
-    );
-    const stalled = (commitments ?? []).filter((c: any) => c.status === "stalled");
-    const resolved = (commitments ?? []).filter((c: any) => c.status === "resolved");
+    // 0024 dropped the commitments table; stubbed to 0 / [] until Plan 3
+    // rebuilds this view around the new project-chat data model.
+    const commitments: any[] = [];
+    const pending: any[] = [];
+    const overdue: any[] = [];
+    const stalled: any[] = [];
+    const resolved: any[] = [];
 
     // Recent artifacts
     const { data: artifacts } = await db
@@ -79,12 +72,8 @@ export async function GET() {
       .eq("project_id", p.id)
       .gte("created_at", yesterday);
 
-    // Pinned count
-    const { count: pinnedCount } = await db
-      .from("project_messages")
-      .select("*", { count: "exact", head: true })
-      .eq("project_id", p.id)
-      .eq("is_pinned", true);
+    // 0024 dropped is_pinned; stubbed to 0 until Plan 3 rebuilds this view.
+    const pinnedCount = 0;
 
     // Build agent name lookup
     const nameMap: Record<string, string> = {};
