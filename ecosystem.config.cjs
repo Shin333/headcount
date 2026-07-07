@@ -60,7 +60,7 @@ module.exports = {
       // Same pattern: call node + the next CLI script directly to avoid
       // pnpm/cmd-shim troubles. Requires `pnpm build` to have produced .next/.
       script: "node",
-      args: "./node_modules/next/dist/bin/next start",
+      args: "./node_modules/next/dist/bin/next start -H 127.0.0.1",
       instances: 1,
       exec_mode: "fork",
       autorestart: true,

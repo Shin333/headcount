@@ -237,6 +237,12 @@ export async function* runHandler(
         cwd: REPO_ROOT,
         abortController,
         systemPrompt: buildSystemPrompt(request),
+        // On Linux the SDK probes the musl sidecar before the gnu one and
+        // pnpm installs both, so a glibc host resolves (and fails to spawn)
+        // the musl binary. CLAUDE_CODE_EXECUTABLE pins the correct one.
+        ...(process.env.CLAUDE_CODE_EXECUTABLE
+          ? { pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE }
+          : {}),
       },
     })) {
       if (terminated) break;

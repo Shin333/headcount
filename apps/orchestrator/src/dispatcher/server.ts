@@ -222,9 +222,14 @@ export async function startDispatcherServer(
   const port = resolvePort(options);
   const app = buildApp();
 
+  // Bind localhost-only by default: the dispatcher must never be reachable
+  // from the public internet (the Command Center proxies it on-box).
+  const hostname = process.env.DISPATCHER_HOST ?? "127.0.0.1";
+
   const server: ServerType = serve({
     fetch: app.fetch,
     port,
+    hostname,
   });
 
   // Wait for the underlying http.Server to bind before resolving.
@@ -234,8 +239,8 @@ export async function startDispatcherServer(
   });
 
   logger.info(
-    { event: "dispatcher.started", port, version: VERSION },
-    `dispatcher started on port ${port}`,
+    { event: "dispatcher.started", port, hostname, version: VERSION },
+    `dispatcher started on ${hostname}:${port}`,
   );
 
   const handle: DispatcherServerHandle = {
