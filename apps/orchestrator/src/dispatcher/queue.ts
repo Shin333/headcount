@@ -724,12 +724,18 @@ async function workerLoop(): Promise<void> {
     const agentId = MAIN_ROUTER_SENTINEL_ID;
 
     // INSERT agent_runs row. Failure short-circuits before any SDK call.
+    // `runtime` records which sanctioned surface powers the run. The API
+    // vocabulary (claude | codex) maps onto the 0024 check-constraint
+    // vocabulary: 'claude_code' | 'codex' | 'codex_fallback'.
+    const dbRuntime =
+      (run.request.runtime ?? "claude") === "codex" ? "codex" : "claude_code";
     try {
       const { error: insErr } = await db.from("agent_runs").insert({
         id: run.runId,
         agent_id: agentId,
         project_id: run.request.project_id,
         status: "running",
+        runtime: dbRuntime,
       });
       if (insErr) throw new Error(insErr.message);
     } catch (e) {
@@ -881,7 +887,12 @@ async function workerLoop(): Promise<void> {
     // if budget accuracy becomes operationally important — Plan 2 Task 4.1d).
     if (outcome.status !== "cancelled") {
       try {
-        await incrementBudget(BUDGET_PROVIDER);
+        // Budget is tracked per runtime provider: codex runs count against
+        // the "codex" window, claude runs against "claude" — separate
+        // subscriptions, separate daily caps.
+        await incrementBudget(
+          (run.request.runtime ?? "claude") as BudgetProvider,
+        );
         await refreshBudgetState();
       } catch (e) {
         logger.error(
