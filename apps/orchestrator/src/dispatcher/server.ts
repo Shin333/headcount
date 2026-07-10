@@ -151,6 +151,58 @@ export function buildApp(): Hono {
     //      (Task 4.1d).
     const abortSignal = c.req.raw.signal as AbortSignal | undefined;
 
+    // ------------------------------------------------------------------
+    // Runtime gate (spec §6.9 extension, 2026-07-10): sanctioned surfaces
+    // only; metered paths hard-gated OFF by default.
+    // ------------------------------------------------------------------
+    const runtime = parsed.data.runtime ?? "claude";
+    if (runtime === "openai-api" || runtime === "anthropic-api") {
+      // METERED pay-per-token. Requires ALL of: explicit per-task opt-in,
+      // a hard budget cap, and the vendor key present server-side. A
+      // runaway agent must never be able to start an unbounded API bill.
+      if (!parsed.data.metered_opt_in || !parsed.data.budget_usd) {
+        return c.json(
+          {
+            error: "metered_not_opted_in",
+            message:
+              `${runtime} bills per token. Re-dispatch with explicit ` +
+              `metered_opt_in=true and a budget_usd cap to use it.`,
+          },
+          403,
+        );
+      }
+      const keyPresent =
+        runtime === "openai-api"
+          ? !!process.env.OPENAI_API_KEY
+          : !!process.env.ANTHROPIC_API_KEY;
+      if (!keyPresent) {
+        return c.json(
+          {
+            error: "metered_key_missing",
+            message: `${runtime} opted in, but no vendor key is configured on the box.`,
+          },
+          503,
+        );
+      }
+      // The gate lands ahead of execution: nothing metered can run or bill.
+      return c.json(
+        {
+          error: "metered_runtime_not_implemented",
+          message:
+            "Metered execution is gated but not yet wired — no metered path can run or bill.",
+        },
+        501,
+      );
+    }
+    if (runtime === "codex") {
+      const { codexSubscriptionReady } = await import("./codex-run-handler.js");
+      const ready = codexSubscriptionReady();
+      if (!ready.ok) {
+        // Sanctioned surface unreachable -> refuse loudly, never improvise.
+        return c.json({ error: "codex_unavailable", message: ready.reason }, 503);
+      }
+    }
+
     // Enqueue the run. Per the main-router pivot, the root `agent_runs.agent_id`
     // is always the main-router sentinel (set inside queue.ts); the hint is
     // informational so run-handler can prefix the SDK system prompt.
@@ -160,6 +212,8 @@ export function buildApp(): Hono {
         prompt: parsed.data.prompt,
         entry_agent_slug: hintSlug,
         hint_agent_id: hintAgentId,
+        runtime,
+        model: parsed.data.model,
       },
       abortSignal,
     );
@@ -169,6 +223,8 @@ export function buildApp(): Hono {
         event: "dispatcher.run_accepted",
         run_id: runId,
         project_id: parsed.data.project_id,
+        runtime,
+        model: parsed.data.model,
       },
       "run accepted",
     );

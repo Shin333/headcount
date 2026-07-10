@@ -47,7 +47,7 @@ function findRepoRoot(): string {
   );
 }
 
-const REPO_ROOT = findRepoRoot();
+export const REPO_ROOT = findRepoRoot();
 
 // ---------------------------------------------------------------------------
 // Resolved request shape. Per Plan 2 amendment 2026-05-09 (main-router pivot),
@@ -59,6 +59,12 @@ export interface ResolvedRunRequest {
   project_id: string;
   prompt: string;
   entry_agent_slug?: string;
+  /** Runtime powering the run. "claude" (default, Agent SDK on Max
+   *  subscription) or "codex" (Codex CLI on ChatGPT subscription) —
+   *  both sanctioned, subscription-quota surfaces. */
+  runtime?: "claude" | "codex";
+  /** Model hint: SDK `model` option on claude; `-m` on codex. */
+  model?: string;
 }
 
 /**
@@ -186,6 +192,15 @@ export async function* runHandler(
   runId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<DispatcherSseEvent> {
+  // Runtime switch: "codex" runs delegate wholesale to the Codex CLI handler
+  // (ChatGPT subscription surface). Everything below is the claude runtime
+  // (Agent SDK on the Max subscription — the default and unchanged path).
+  if (request.runtime === "codex") {
+    const { codexRunHandler } = await import("./codex-run-handler.js");
+    yield* codexRunHandler(request, runId, signal);
+    return;
+  }
+
   const startedAt = Date.now();
   let seq = 0;
   const nextBase = () => ({
@@ -201,6 +216,8 @@ export async function* runHandler(
     project_id: request.project_id,
     prompt: request.prompt,
     entry_agent_slug: request.entry_agent_slug,
+    runtime: "claude",
+    model: request.model,
   };
 
   // Per-run state for entry-dispatch detection + attribution.
@@ -237,6 +254,9 @@ export async function* runHandler(
         cwd: REPO_ROOT,
         abortController,
         systemPrompt: buildSystemPrompt(request),
+        // Model hint from the runtime selector ("use Fable 5 …"). Absent ->
+        // the SDK default, exactly as before.
+        ...(request.model ? { model: request.model } : {}),
         // On Linux the SDK probes the musl sidecar before the gnu one and
         // pnpm installs both, so a glibc host resolves (and fails to spawn)
         // the musl binary. CLAUDE_CODE_EXECUTABLE pins the correct one.

@@ -55,6 +55,27 @@ export const RunRequestSchema = z.object({
   project_id: z.string().uuid(),
   prompt: z.string().min(1),
   entry_agent_slug: z.string().optional(),
+  /**
+   * Which runtime powers this run — SANCTIONED SURFACES ONLY (spec §6.9):
+   *   claude (default) — Claude Code / Agent SDK on the Max subscription
+   *     login. Free (subscription quota). No ANTHROPIC_API_KEY, ever.
+   *   codex — OpenAI Codex CLI (`codex exec`) signed in with the ChatGPT
+   *     subscription. Free (subscription quota). Requires `codex login` on
+   *     the box; rejected with 503 if not authenticated. Never raw tokens
+   *     against backend endpoints — the CLI is the surface.
+   *   openai-api / anthropic-api — METERED pay-per-token. Hard-gated:
+   *     requires explicit per-task `metered_opt_in: true` AND a
+   *     `budget_usd` cap AND the vendor key in the environment. Default
+   *     OFF; rejected with 403 otherwise. (Execution not yet implemented —
+   *     the gate exists so nothing can silently start billing.)
+   */
+  runtime: z.enum(["claude", "codex", "openai-api", "anthropic-api"]).optional(),
+  /** Model hint for the chosen runtime, e.g. "gpt-5.6-sol" or "opus". */
+  model: z.string().max(64).optional(),
+  /** Metered runtimes only: explicit per-task opt-in. */
+  metered_opt_in: z.boolean().optional(),
+  /** Metered runtimes only: hard budget cap in USD. */
+  budget_usd: z.number().positive().max(1000).optional(),
 });
 
 export type RunRequest = z.infer<typeof RunRequestSchema>;
@@ -81,6 +102,10 @@ export interface ResolvedEnqueueRequest {
   entry_agent_slug?: string;
   /** Resolved id of the entry hint agent, paired with `entry_agent_slug`. */
   hint_agent_id?: string;
+  /** Validated runtime (server route enforces the metered gate). */
+  runtime: "claude" | "codex";
+  /** Model hint for the chosen runtime. */
+  model?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +133,11 @@ export interface RunStartedEvent extends DispatcherSseEventBase {
    *  Plan 2 amendment 2026-05-09 (main-router pivot), absent means the
    *  SDK main agent routes from prompt content alone. */
   entry_agent_slug?: string;
+  /** Runtime powering this run ("claude" | "codex") — surfaces show it with
+   *  a FREE/METERED cost label before/while the run executes. */
+  runtime?: string;
+  /** Model hint, e.g. "gpt-5.6-sol". */
+  model?: string;
 }
 
 export interface AssistantMessageEvent extends DispatcherSseEventBase {

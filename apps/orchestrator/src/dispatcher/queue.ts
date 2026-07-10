@@ -724,12 +724,16 @@ async function workerLoop(): Promise<void> {
     const agentId = MAIN_ROUTER_SENTINEL_ID;
 
     // INSERT agent_runs row. Failure short-circuits before any SDK call.
+    // `runtime` records which sanctioned surface powers the run ("claude"
+    // = Agent SDK on the Max subscription, "codex" = Codex CLI on the
+    // ChatGPT subscription) — the column has existed since the spec stub.
     try {
       const { error: insErr } = await db.from("agent_runs").insert({
         id: run.runId,
         agent_id: agentId,
         project_id: run.request.project_id,
         status: "running",
+        runtime: run.request.runtime ?? "claude",
       });
       if (insErr) throw new Error(insErr.message);
     } catch (e) {
@@ -881,7 +885,12 @@ async function workerLoop(): Promise<void> {
     // if budget accuracy becomes operationally important — Plan 2 Task 4.1d).
     if (outcome.status !== "cancelled") {
       try {
-        await incrementBudget(BUDGET_PROVIDER);
+        // Budget is tracked per runtime provider: codex runs count against
+        // the "codex" window, claude runs against "claude" — separate
+        // subscriptions, separate daily caps.
+        await incrementBudget(
+          (run.request.runtime ?? "claude") as BudgetProvider,
+        );
         await refreshBudgetState();
       } catch (e) {
         logger.error(
