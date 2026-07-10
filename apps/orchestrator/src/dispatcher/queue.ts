@@ -724,16 +724,18 @@ async function workerLoop(): Promise<void> {
     const agentId = MAIN_ROUTER_SENTINEL_ID;
 
     // INSERT agent_runs row. Failure short-circuits before any SDK call.
-    // `runtime` records which sanctioned surface powers the run ("claude"
-    // = Agent SDK on the Max subscription, "codex" = Codex CLI on the
-    // ChatGPT subscription) — the column has existed since the spec stub.
+    // `runtime` records which sanctioned surface powers the run. The API
+    // vocabulary (claude | codex) maps onto the 0024 check-constraint
+    // vocabulary: 'claude_code' | 'codex' | 'codex_fallback'.
+    const dbRuntime =
+      (run.request.runtime ?? "claude") === "codex" ? "codex" : "claude_code";
     try {
       const { error: insErr } = await db.from("agent_runs").insert({
         id: run.runId,
         agent_id: agentId,
         project_id: run.request.project_id,
         status: "running",
-        runtime: run.request.runtime ?? "claude",
+        runtime: dbRuntime,
       });
       if (insErr) throw new Error(insErr.message);
     } catch (e) {
