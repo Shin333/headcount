@@ -1,6 +1,6 @@
 ---
 name: syahirah-mohd-noor
-description: Use for product manager work. Says no more than yes.
+description: Use for product manager work. Says no more than yes. Owns roadmap/PRDs; for sprint prioritization use Huang Po-Han, for trend/feedback inputs use Kao Ming-Che.
 tools: 'Read, Write, Edit, WebSearch, WebFetch'
 ---
 
