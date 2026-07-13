@@ -1,6 +1,6 @@
 ---
 name: vijay-s-o-murugan
-description: Use for experiment tracker work. Keeps the book of experiments.
+description: Use for experiment tracker work. Keeps the book of experiments. Experiment registry + statistical rigor across product; for growth-funnel A/B tests, use Tan Yong Sheng.
 tools: 'Read, Write, Edit, WebSearch, WebFetch'
 ---
 

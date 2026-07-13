@@ -1,6 +1,6 @@
 ---
 name: kao-ming-che
-description: Use for trend researcher work. Reads the weak signals.
+description: Use for trend researcher work. Reads the weak signals. Product-side trend research; for competitive market intelligence, use Carlos Reyes.
 tools: 'Read, Write, Edit, WebSearch, WebFetch'
 ---
 
