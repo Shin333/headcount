@@ -66,6 +66,11 @@ let rateLimitStreak = 0;
 // Latch so the operator is alerted once per cap-exhaustion episode, not on
 // every capped run.
 let failoverCapAlerted = false;
+// Optimistic until proven otherwise: agent_runs.model / fallback_reason (added
+// in migration 0029) may not exist on a DB that hasn't run the migration yet.
+// The first "column does not exist" flips this false so we stop trying to write
+// them — the critical status write is unaffected either way.
+let modelColumnsAvailable = true;
 
 // Module-level soft-signal cluster detector. Records transient SDK errors
 // across runs; fires `dispatcher.soft_signal_cluster` once per cluster.
@@ -1060,6 +1065,9 @@ async function workerLoop(): Promise<void> {
     }
 
     // UPDATE agent_runs row with completion metadata.
+    // Critical run-lifecycle write — status + timing + effective runtime. These
+    // columns all exist (runtime since 0024), so this must ALWAYS succeed;
+    // never couple it to the newer model-metadata columns.
     try {
       const { error: updErr } = await db
         .from("agent_runs")
@@ -1067,11 +1075,9 @@ async function workerLoop(): Promise<void> {
           status: outcome.status,
           completed_at: new Date().toISOString(),
           duration_ms: Date.now() - workerStartedAt,
-          // Effective surface — 'codex_fallback' + GPT-5.6 when a rate-limit
-          // failover fired, so the HUD can show what actually ran.
+          // Effective surface — 'codex_fallback' when a rate-limit failover
+          // fired, so the HUD can show what actually ran.
           runtime: effectiveRuntime,
-          model: effectiveModel,
-          fallback_reason: fallbackReason,
         })
         .eq("id", run.runId);
       if (updErr) throw new Error(updErr.message);
@@ -1084,6 +1090,39 @@ async function workerLoop(): Promise<void> {
         },
         "failed to UPDATE agent_runs",
       );
+    }
+
+    // Best-effort model-metadata write (agent_runs.model / fallback_reason,
+    // added in migration 0029). Kept SEPARATE from the lifecycle write above so
+    // a not-yet-applied migration can never strand a run at status='running'.
+    // Self-disables after the first "column does not exist" so a pre-migration
+    // deploy warns once instead of on every run.
+    if (modelColumnsAvailable) {
+      try {
+        const { error: metaErr } = await db
+          .from("agent_runs")
+          .update({ model: effectiveModel, fallback_reason: fallbackReason })
+          .eq("id", run.runId);
+        if (metaErr) throw new Error(metaErr.message);
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (/does not exist|42703/i.test(msg)) {
+          modelColumnsAvailable = false;
+          logger.warn(
+            { event: "dispatcher.model_columns_missing", err: msg },
+            "agent_runs.model/fallback_reason missing — apply migration 0029 to persist model metadata; skipping until then",
+          );
+        } else {
+          logger.error(
+            {
+              event: "dispatcher.agent_runs_meta_update_error",
+              err: msg,
+              run_id: run.runId,
+            },
+            "failed to UPDATE agent_runs model metadata",
+          );
+        }
+      }
     }
 
     run.events.close();
