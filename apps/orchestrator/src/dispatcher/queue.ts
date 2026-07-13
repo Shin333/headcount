@@ -67,7 +67,7 @@ let rateLimitStreak = 0;
 // every capped run.
 let failoverCapAlerted = false;
 // Optimistic until proven otherwise: agent_runs.model / fallback_reason (added
-// in migration 0029) may not exist on a DB that hasn't run the migration yet.
+// in migration 0031) may not exist on a DB that hasn't run the migration yet.
 // The first "column does not exist" flips this false so we stop trying to write
 // them — the critical status write is unaffected either way.
 let modelColumnsAvailable = true;
@@ -1093,7 +1093,7 @@ async function workerLoop(): Promise<void> {
     }
 
     // Best-effort model-metadata write (agent_runs.model / fallback_reason,
-    // added in migration 0029). Kept SEPARATE from the lifecycle write above so
+    // added in migration 0031). Kept SEPARATE from the lifecycle write above so
     // a not-yet-applied migration can never strand a run at status='running'.
     // Self-disables after the first "column does not exist" so a pre-migration
     // deploy warns once instead of on every run.
@@ -1119,7 +1119,7 @@ async function workerLoop(): Promise<void> {
           modelColumnsAvailable = false;
           logger.warn(
             { event: "dispatcher.model_columns_missing", err: msg },
-            "agent_runs.model/fallback_reason missing — apply migration 0029 to persist model metadata; skipping until then",
+            "agent_runs.model/fallback_reason missing — apply migration 0031 to persist model metadata; skipping until then",
           );
         } else {
           logger.error(

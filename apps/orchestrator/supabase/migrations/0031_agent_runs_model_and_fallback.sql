@@ -1,4 +1,6 @@
--- 0029_agent_runs_model_and_fallback.sql
+-- 0031_agent_runs_model_and_fallback.sql
+--
+-- (Numbered 0031: 0029/0030 are owned by the security-privileges migrations.)
 --
 -- Fleet model-config fix (2026-07-14). Records which model actually ran and,
 -- when a hard Claude rate-limit forced an Opus -> GPT-5.6 (Codex) failover,
