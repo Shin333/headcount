@@ -1106,7 +1106,16 @@ async function workerLoop(): Promise<void> {
         if (metaErr) throw new Error(metaErr.message);
       } catch (e) {
         const msg = (e as Error).message;
-        if (/does not exist|42703/i.test(msg)) {
+        // Missing-column surfaces two ways depending on PostgREST path:
+        //   select -> "column ... does not exist" (42703)
+        //   update -> "Could not find the '<col>' column ... in the schema
+        //             cache" (PGRST204)
+        // Match both so a pre-migration deploy warns ONCE, not every run.
+        if (
+          /does not exist|42703|schema cache|could not find the '.*' column/i.test(
+            msg,
+          )
+        ) {
           modelColumnsAvailable = false;
           logger.warn(
             { event: "dispatcher.model_columns_missing", err: msg },
