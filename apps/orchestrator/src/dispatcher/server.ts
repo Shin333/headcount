@@ -214,6 +214,8 @@ export function buildApp(): Hono {
         hint_agent_id: hintAgentId,
         runtime,
         model: parsed.data.model,
+        repo: parsed.data.repo,
+        repo_path: parsed.data.repo_path,
       },
       abortSignal,
     );

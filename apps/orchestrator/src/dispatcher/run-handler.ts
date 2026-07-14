@@ -24,8 +24,8 @@
 // streamed `assistant` event.
 // ============================================================================
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { logger } from "../ops/logger.js";
 import { MAIN_ROUTER_SYSTEM_PROMPT } from "./main-router-prompt.js";
@@ -66,6 +66,42 @@ export interface ResolvedRunRequest {
   runtime?: "claude" | "codex";
   /** Model hint: SDK `model` option on claude; `-m` on codex. */
   model?: string;
+  /** Target GitHub repo NAME (from the Jarvis registry, e.g. "dua"). When
+   *  set, the run edits that repo: cwd is pointed at its writable clone and
+   *  the agent is instructed to branch/commit/push/PR. */
+  repo?: string;
+  /** Absolute path of the repo's writable clone (e.g. /home/openclaw/repos/dua).
+   *  Resolved command-center-side from the registry; validated here before it
+   *  becomes the run's cwd. */
+  repo_path?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Per-run working directory. Default = the headcount repo root. When a run
+// targets a repo (repo_path set), chdir the SDK there so file edits + git/gh
+// land in that clone. Defense: only accept real directories under REPOS_BASE
+// (the dispatcher is localhost-only + command-center-trusted, but we never
+// chdir to an arbitrary request-supplied path).
+// ---------------------------------------------------------------------------
+const REPOS_BASE = resolve(
+  process.env.JARVIS_REPOS_DIR ??
+    join(process.env.HOME ?? "/home/openclaw", "repos"),
+);
+
+function resolveRunCwd(request: ResolvedRunRequest, runId: string): string {
+  const rp = request.repo_path?.trim();
+  if (!rp) return REPO_ROOT;
+  const abs = resolve(rp);
+  const allowed =
+    (abs === REPOS_BASE || abs.startsWith(REPOS_BASE + "/")) &&
+    existsSync(abs) &&
+    statSync(abs).isDirectory();
+  if (allowed) return abs;
+  logger.warn(
+    { event: "dispatcher.repo_path_rejected", repo_path: rp, run_id: runId },
+    "repo_path is not an allowed repo clone under REPOS_BASE; using repo root",
+  );
+  return REPO_ROOT;
 }
 
 /**
@@ -83,6 +119,20 @@ function buildSystemPrompt(request: ResolvedRunRequest): {
   let append = MAIN_ROUTER_SYSTEM_PROMPT;
   if (request.entry_agent_slug) {
     append += `\n\nThe user is addressing ${request.entry_agent_slug} directly; dispatch to ${request.entry_agent_slug} first.`;
+  }
+  // Repo-editing context. The working directory is already the repo's clone;
+  // the agent that actually edits is a dispatched subagent, so instruct the
+  // router to RELAY this workflow to whoever it dispatches (route to a
+  // Bash-capable engineering persona), and to produce a real PR.
+  if (request.repo && request.repo_path) {
+    append += `\n\n# Repository-editing task
+The working directory is a writable git checkout of the "${request.repo}" repository at ${request.repo_path}. This is a real code change that must produce a real PR with real file diffs. Dispatch to a Bash-capable engineering agent and instruct it, in your Agent-tool prompt, to:
+1. Create a feature branch: git checkout -b <short-kebab-branch>.
+2. Make the actual file edits with Write/Edit (real changes, not a description).
+3. Stage + commit: git add -A && git commit -m "<clear message>".
+4. Push: git push -u origin <branch>.
+5. Open a PR: gh pr create --fill (or an explicit --title/--body), and report the PR URL.
+Do NOT edit files outside ${request.repo_path}.`;
   }
   return { type: "preset", preset: "claude_code", append };
 }
@@ -215,6 +265,16 @@ export async function* runHandler(
   // ("use Fable 5 …") passes through unchanged — Fable stays opt-in only.
   const effectiveModel = resolveClaudeModel(request.model);
 
+  // Per-run cwd: the target repo's clone when a repo is specified, else the
+  // headcount root (validated + sandboxed to REPOS_BASE).
+  const runCwd = resolveRunCwd(request, runId);
+  if (runCwd !== REPO_ROOT) {
+    logger.info(
+      { event: "dispatcher.repo_cwd", run_id: runId, repo: request.repo, cwd: runCwd },
+      `run editing repo "${request.repo}" in ${runCwd}`,
+    );
+  }
+
   // run_started — first event, before any SDK boot. `model` carries the
   // RESOLVED model so surfaces show what actually ran, not an empty default.
   yield {
@@ -258,7 +318,7 @@ export async function* runHandler(
     for await (const message of query({
       prompt: request.prompt,
       options: {
-        cwd: REPO_ROOT,
+        cwd: runCwd,
         abortController,
         systemPrompt: buildSystemPrompt(request),
         // ALWAYS pass a resolved model. Absent hint -> the pinned default
