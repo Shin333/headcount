@@ -1,6 +1,6 @@
 ---
 name: seah-wan-qing
-description: Use for social media strategist work. Cross-platform thinker.
+description: Use for social media strategist work. Cross-platform thinker. Sets cross-platform social strategy; the platform specialists under Tessa Goh execute it.
 tools: 'Read, Write, Edit, WebSearch, WebFetch'
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: edward-tanuwidjaja
-description: Use for workflow architect work. Designs the processes that scale.
+description: Use for workflow architect work. Designs the processes that scale. Authors processes/SOPs; for automation governance and approval, use Goh Wen Jie.
 tools: 'Read, Write, Edit, Glob, Grep, Bash, WebSearch, WebFetch'
 ---
 

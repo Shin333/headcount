@@ -1,6 +1,6 @@
 ---
 name: vanessa-wee
-description: Use for sdr team lead work. Runs the SDR team.
+description: Use for sdr team lead work. Runs the SDR team. Owns SDR execution/coaching; for outbound strategy and messaging, use Bianca Aquino.
 tools: 'Read, Write, Edit, WebSearch, WebFetch, Agent'
 ---
 

@@ -2,7 +2,8 @@
 name: nur-aisyah-binte-rahim
 description: >-
   Use for legal compliance checker work. The one who reads the fine print on the
-  new SaaS tool before it gets signed.
+  new SaaS tool before it gets signed. Pre-signing/pre-launch review; for
+  after-the-fact compliance audits, use Tanaka Hiroshi.
 tools: 'Read, Write, Edit, WebSearch, WebFetch'
 ---
 
