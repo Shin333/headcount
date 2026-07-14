@@ -72,6 +72,12 @@ export const RunRequestSchema = z.object({
   runtime: z.enum(["claude", "codex", "openai-api", "anthropic-api"]).optional(),
   /** Model hint for the chosen runtime, e.g. "gpt-5.6-sol" or "opus". */
   model: z.string().max(64).optional(),
+  /** Target GitHub repo NAME (Jarvis registry, e.g. "dua") for a repo-editing
+   *  run. Informational — used in the agent's PR guidance. */
+  repo: z.string().max(128).optional(),
+  /** Absolute path of the repo's writable clone; validated + sandboxed to
+   *  REPOS_BASE in run-handler before it becomes the run's cwd. */
+  repo_path: z.string().max(512).optional(),
   /** Metered runtimes only: explicit per-task opt-in. */
   metered_opt_in: z.boolean().optional(),
   /** Metered runtimes only: hard budget cap in USD. */
@@ -106,6 +112,10 @@ export interface ResolvedEnqueueRequest {
   runtime: "claude" | "codex";
   /** Model hint for the chosen runtime. */
   model?: string;
+  /** Target repo name + clone path for a repo-editing run (Feature: agent
+   *  repo edits). Absent for ordinary runs. */
+  repo?: string;
+  repo_path?: string;
 }
 
 // ---------------------------------------------------------------------------
