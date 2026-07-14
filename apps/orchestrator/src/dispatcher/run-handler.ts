@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { logger } from "../ops/logger.js";
 import { MAIN_ROUTER_SYSTEM_PROMPT } from "./main-router-prompt.js";
+import { resolveClaudeModel } from "./model-policy.js";
 import type { DispatcherSseEvent } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -209,7 +210,13 @@ export async function* runHandler(
     timestamp: new Date().toISOString(),
   });
 
-  // run_started — first event, before any SDK boot
+  // Resolve the effective model ONCE. Absent hint -> the pinned default
+  // (Opus 4.8), never the SDK's always-latest pick (Fable). An explicit hint
+  // ("use Fable 5 …") passes through unchanged — Fable stays opt-in only.
+  const effectiveModel = resolveClaudeModel(request.model);
+
+  // run_started — first event, before any SDK boot. `model` carries the
+  // RESOLVED model so surfaces show what actually ran, not an empty default.
   yield {
     type: "run_started",
     ...nextBase(),
@@ -217,7 +224,7 @@ export async function* runHandler(
     prompt: request.prompt,
     entry_agent_slug: request.entry_agent_slug,
     runtime: "claude",
-    model: request.model,
+    model: effectiveModel,
   };
 
   // Per-run state for entry-dispatch detection + attribution.
@@ -254,9 +261,11 @@ export async function* runHandler(
         cwd: REPO_ROOT,
         abortController,
         systemPrompt: buildSystemPrompt(request),
-        // Model hint from the runtime selector ("use Fable 5 …"). Absent ->
-        // the SDK default, exactly as before.
-        ...(request.model ? { model: request.model } : {}),
+        // ALWAYS pass a resolved model. Absent hint -> the pinned default
+        // (Opus 4.8); an explicit "use Fable 5 …" hint passes through. Never
+        // leave this unset — an unset `model` lets the SDK resolve "latest"
+        // (Fable), which is exactly the whole-fleet-on-Fable bug we're fixing.
+        model: effectiveModel,
         // On Linux the SDK probes the musl sidecar before the gnu one and
         // pnpm installs both, so a glibc host resolves (and fails to spawn)
         // the musl binary. CLAUDE_CODE_EXECUTABLE pins the correct one.

@@ -228,6 +228,27 @@ export interface RateLimitEvent extends DispatcherSseEventBase {
   details: unknown;
 }
 
+/**
+ * Emitted by the worker when a hard Claude rate-limit forces an automatic
+ * Opus -> GPT-5.6 (Codex) failover for a run (2026-07-14 fleet-model fix).
+ * `seq` is -1 (worker-injected, outside the run-handler's own seq sequence).
+ * Surfaces mark the run as "ran on <to_model> — <reason>" so it's always
+ * visible which surface actually served the work.
+ */
+export interface ModelFallbackEvent extends DispatcherSseEventBase {
+  type: "model_fallback";
+  /** Runtime that was rate-limited (always "claude" today). */
+  from_runtime: string;
+  /** Effective claude model that hit the wall, e.g. "claude-opus-4-8". */
+  from_model: string;
+  /** Runtime that took over — the 0024 vocabulary value "codex_fallback". */
+  to_runtime: string;
+  /** Model that took over, e.g. "gpt-5.6-terra". */
+  to_model: string;
+  /** Short machine-readable reason, e.g. "claude_rate_limit_hard". */
+  reason: string;
+}
+
 export interface RunCompletedEvent extends DispatcherSseEventBase {
   type: "run_completed";
   status: "success" | "error";
@@ -258,7 +279,8 @@ export type DispatcherSseEvent =
   | ErrorEvent
   | QueueStatusEvent
   | BudgetExhaustedEvent
-  | RateLimitEvent;
+  | RateLimitEvent
+  | ModelFallbackEvent;
 
 // ---------------------------------------------------------------------------
 // Queue introspection (GET /api/queue)

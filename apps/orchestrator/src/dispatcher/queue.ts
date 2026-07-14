@@ -19,11 +19,24 @@ import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { logger } from "../ops/logger.js";
+import { alertOperator } from "../ops/alert.js";
 import { AsyncQueue } from "./async-queue.js";
 import { runHandler } from "./run-handler.js";
 import { resolveAgentIdBySlug } from "./agent-resolver.js";
 import { MAIN_ROUTER_SENTINEL_ID } from "./main-router-prompt.js";
 import { checkBudget, incrementBudget, type BudgetProvider } from "./budget.js";
+import { codexSubscriptionReady } from "./codex-run-handler.js";
+import {
+  CODEX_FAILOVER_MAX_PER_WINDOW,
+  CODEX_FAILOVER_WINDOW_MS,
+  CODEX_FALLBACK_MODEL,
+  createFailoverBudget,
+  isFableModel,
+  isRateLimitErrorMessage,
+  rateLimitBackoffMs,
+  resolveClaudeModel,
+  shouldFailoverToCodex,
+} from "./model-policy.js";
 import {
   withRetry,
   defaultIsAuthError,
@@ -39,6 +52,25 @@ import type {
 
 const KEEPALIVE_INTERVAL_MS = 5000;
 const BUDGET_PROVIDER: BudgetProvider = "claude";
+
+// Rate-limit failover state (2026-07-14 fleet-model fix).
+//   failoverBudget — caps auto Opus->Codex failovers per rolling window so a
+//     sustained Claude outage can't silently drain the ChatGPT quota.
+//   rateLimitStreak — consecutive hard rate-limits; drives exponential backoff
+//     and resets on the first non-rate-limited outcome.
+const failoverBudget = createFailoverBudget({
+  windowMs: CODEX_FAILOVER_WINDOW_MS,
+  cap: CODEX_FAILOVER_MAX_PER_WINDOW,
+});
+let rateLimitStreak = 0;
+// Latch so the operator is alerted once per cap-exhaustion episode, not on
+// every capped run.
+let failoverCapAlerted = false;
+// Optimistic until proven otherwise: agent_runs.model / fallback_reason (added
+// in migration 0031) may not exist on a DB that hasn't run the migration yet.
+// The first "column does not exist" flips this false so we stop trying to write
+// them — the critical status write is unaffected either way.
+let modelColumnsAvailable = true;
 
 // Module-level soft-signal cluster detector. Records transient SDK errors
 // across runs; fires `dispatcher.soft_signal_cluster` once per cluster.
@@ -318,6 +350,11 @@ interface SubagentDispatchRecord {
 interface IterationOutcome {
   status: "completed" | "failed" | "cancelled";
   errorMessage?: string;
+  /** True iff the run terminated on a HARD Claude rate-limit signal (SDK
+   *  rate_limit_event severity=hard, or a rate-limit-classified error event).
+   *  This — and ONLY this — gates the Opus->Codex failover. Real errors and
+   *  bugs never set it, so they never fail over. */
+  hardRateLimit?: boolean;
 }
 
 /**
@@ -392,8 +429,14 @@ async function iterateRunHandler(
   // toolUseDispatch.agentId (Task 4.3 — unchanged).
   const entrySenderId = MAIN_ROUTER_SENTINEL_ID;
 
+  // Tracks whether a HARD Claude rate-limit was observed this run. Set from a
+  // rate_limit_event(severity=hard) OR a terminal error classified as a
+  // rate-limit. Gates the Opus->Codex failover in the worker loop.
+  let sawHardRateLimit = false;
+
   for await (const event of runHandler(run.request, run.runId, run.abortSignal)) {
     if (event.type === "rate_limit_event") {
+      if (event.severity === "hard") sawHardRateLimit = true;
       logger.warn(
         {
           event: "dispatcher.rate_limit_event",
@@ -580,6 +623,12 @@ async function iterateRunHandler(
     if (event.type === "run_completed") {
       outcome = { status: "completed" };
     } else if (event.type === "error") {
+      // A rate-limit-classified terminal error (SDK `rate_limit` key ->
+      // "rate limit exceeded") is a hard rate-limit signal too. Cancellations
+      // are never rate-limits.
+      if (event.cancelled !== true && isRateLimitErrorMessage(event.message)) {
+        sawHardRateLimit = true;
+      }
       outcome = {
         status: event.cancelled === true ? "cancelled" : "failed",
         errorMessage: event.message,
@@ -632,6 +681,7 @@ async function iterateRunHandler(
     }
   }
 
+  outcome.hardRateLimit = sawHardRateLimit;
   return outcome;
 }
 
@@ -788,6 +838,18 @@ async function workerLoop(): Promise<void> {
 
     let outcome: IterationOutcome = { status: "failed" };
 
+    // Effective surface for HUD marking + budget accounting. Starts as the
+    // requested runtime/model; the Opus->Codex failover below rewrites these
+    // to 'codex_fallback' + GPT-5.6 when it fires.
+    let effectiveRuntime: string = dbRuntime;
+    let effectiveModel: string | null =
+      (run.request.runtime ?? "claude") === "codex"
+        ? run.request.model ?? null
+        : resolveClaudeModel(run.request.model);
+    let fallbackReason: string | null = null;
+    let budgetProvider: BudgetProvider =
+      (run.request.runtime ?? "claude") === "codex" ? "codex" : "claude";
+
     try {
       // Retry wraps the SDK iteration. Events emitted by run-handler before
       // a thrown exception remain in run.events — see scaffolding note below.
@@ -855,7 +917,157 @@ async function workerLoop(): Promise<void> {
       outcome = { status: "failed", errorMessage: e.message };
     }
 
+    // -----------------------------------------------------------------------
+    // Rate-limit backoff + Opus->Codex failover (2026-07-14 fleet-model fix).
+    //
+    // Triggers on a HARD Claude rate-limit ONLY — never on real errors/bugs
+    // (shouldFailoverToCodex gates on outcome.hardRateLimit). The failover
+    // target is ALWAYS GPT-5.6 via Codex — never Sonnet, Haiku, or Fable. The
+    // codex runtime is the target, never a source, so codex-native runs never
+    // enter here.
+    // -----------------------------------------------------------------------
+    const isClaudeRuntime = (run.request.runtime ?? "claude") !== "codex";
+    if (isClaudeRuntime && shouldFailoverToCodex(outcome)) {
+      // Exponential backoff so the fleet stops instantly re-hammering the wall.
+      rateLimitStreak += 1;
+      const backoff = rateLimitBackoffMs(rateLimitStreak);
+      logger.warn(
+        {
+          event: "dispatcher.rate_limit_backoff",
+          run_id: run.runId,
+          streak: rateLimitStreak,
+          backoff_ms: backoff,
+        },
+        `hard Claude rate-limit; backing off ${backoff}ms before failover`,
+      );
+      if (backoff > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, backoff));
+      }
+
+      // Guardrail: Codex must be authenticated & subscription-backed, and the
+      // per-window failover cap must not be exhausted.
+      const codexReady = codexSubscriptionReady();
+      const slot = codexReady.ok
+        ? failoverBudget.tryConsume(Date.now())
+        : { allowed: false, count: 0, cap: CODEX_FAILOVER_MAX_PER_WINDOW };
+
+      if (!codexReady.ok) {
+        // Both links down -> fail VISIBLY, never loop.
+        fallbackReason = "codex_unavailable";
+        run.events.push({
+          type: "error",
+          run_id: run.runId,
+          seq: -1,
+          timestamp: new Date().toISOString(),
+          message: `Opus rate-limited + Codex unavailable/re-auth: ${codexReady.reason}`,
+          recoverable: false,
+        });
+        outcome = {
+          status: "failed",
+          errorMessage: `opus_rate_limited_codex_unavailable: ${codexReady.reason}`,
+        };
+        logger.error(
+          {
+            event: "dispatcher.failover_codex_unavailable",
+            run_id: run.runId,
+            reason: codexReady.reason,
+          },
+          "Opus rate-limited and Codex unavailable; failing visibly",
+        );
+      } else if (!slot.allowed) {
+        // Failover volume cap tripped -> pause non-critical + alert operator,
+        // then fail visibly. Protects the ChatGPT quota from a Claude outage.
+        fallbackReason = "codex_failover_cap_reached";
+        if (!failoverCapAlerted) {
+          failoverCapAlerted = true;
+          void alertOperator(
+            "dispatcher.codex_failover_cap",
+            `Codex failover cap reached (${slot.cap}/${Math.round(
+              CODEX_FAILOVER_WINDOW_MS / 60000,
+            )}m). Non-critical jobs paused — Claude appears to be in a sustained rate-limit.`,
+            { run_id: run.runId, count: slot.count, cap: slot.cap },
+          );
+        }
+        run.events.push({
+          type: "error",
+          run_id: run.runId,
+          seq: -1,
+          timestamp: new Date().toISOString(),
+          message: `Opus rate-limited; Codex failover paused (cap ${slot.cap}/window reached to protect the ChatGPT quota).`,
+          recoverable: true,
+        });
+        outcome = {
+          status: "failed",
+          errorMessage: "codex_failover_cap_reached",
+        };
+      } else {
+        // Perform the failover: re-run the SAME prompt on GPT-5.6 via Codex.
+        failoverCapAlerted = false; // fresh episode; re-arm the cap alert
+        const toModel = CODEX_FALLBACK_MODEL;
+        // Defensive invariant: the auto target must NEVER be Fable.
+        if (isFableModel(toModel)) {
+          throw new Error(
+            `invariant violated: codex fallback model must not be Fable (${toModel})`,
+          );
+        }
+        run.events.push({
+          type: "model_fallback",
+          run_id: run.runId,
+          seq: -1,
+          timestamp: new Date().toISOString(),
+          from_runtime: "claude",
+          from_model: effectiveModel ?? "claude",
+          to_runtime: "codex_fallback",
+          to_model: toModel,
+          reason: "claude_rate_limit_hard",
+        });
+        logger.warn(
+          {
+            event: "dispatcher.model_failover",
+            run_id: run.runId,
+            from_model: effectiveModel,
+            to_model: toModel,
+            failover_count: slot.count,
+          },
+          `Opus rate-limited; failing over to ${toModel} via Codex`,
+        );
+
+        const codexRequest: ResolvedEnqueueRequest = {
+          ...run.request,
+          runtime: "codex",
+          model: toModel,
+        };
+        const failoverRun: QueuedRun = { ...run, request: codexRequest };
+        try {
+          outcome = await iterateRunHandler(failoverRun, { current: inFlight });
+        } catch (e) {
+          outcome = { status: "failed", errorMessage: (e as Error).message };
+        }
+        effectiveRuntime = "codex_fallback";
+        effectiveModel = toModel;
+        budgetProvider = "codex";
+        fallbackReason = "claude_rate_limit_hard";
+
+        // Activity note so the HUD shows which surface actually served the run.
+        await insertProjectMessage({
+          runId: run.runId,
+          projectId: run.request.project_id,
+          senderId: MAIN_ROUTER_SENTINEL_ID,
+          kind: "output",
+          body: `⚠️ Ran on ${toModel} via Codex — Claude Opus was rate-limited.`,
+        });
+      }
+    } else {
+      // Any non-rate-limited outcome (success, real error, cancellation, or a
+      // codex-native run) clears the backoff streak + cap-alert latch.
+      rateLimitStreak = 0;
+      failoverCapAlerted = false;
+    }
+
     // UPDATE agent_runs row with completion metadata.
+    // Critical run-lifecycle write — status + timing + effective runtime. These
+    // columns all exist (runtime since 0024), so this must ALWAYS succeed;
+    // never couple it to the newer model-metadata columns.
     try {
       const { error: updErr } = await db
         .from("agent_runs")
@@ -863,6 +1075,9 @@ async function workerLoop(): Promise<void> {
           status: outcome.status,
           completed_at: new Date().toISOString(),
           duration_ms: Date.now() - workerStartedAt,
+          // Effective surface — 'codex_fallback' when a rate-limit failover
+          // fired, so the HUD can show what actually ran.
+          runtime: effectiveRuntime,
         })
         .eq("id", run.runId);
       if (updErr) throw new Error(updErr.message);
@@ -877,6 +1092,48 @@ async function workerLoop(): Promise<void> {
       );
     }
 
+    // Best-effort model-metadata write (agent_runs.model / fallback_reason,
+    // added in migration 0031). Kept SEPARATE from the lifecycle write above so
+    // a not-yet-applied migration can never strand a run at status='running'.
+    // Self-disables after the first "column does not exist" so a pre-migration
+    // deploy warns once instead of on every run.
+    if (modelColumnsAvailable) {
+      try {
+        const { error: metaErr } = await db
+          .from("agent_runs")
+          .update({ model: effectiveModel, fallback_reason: fallbackReason })
+          .eq("id", run.runId);
+        if (metaErr) throw new Error(metaErr.message);
+      } catch (e) {
+        const msg = (e as Error).message;
+        // Missing-column surfaces two ways depending on PostgREST path:
+        //   select -> "column ... does not exist" (42703)
+        //   update -> "Could not find the '<col>' column ... in the schema
+        //             cache" (PGRST204)
+        // Match both so a pre-migration deploy warns ONCE, not every run.
+        if (
+          /does not exist|42703|schema cache|could not find the '.*' column/i.test(
+            msg,
+          )
+        ) {
+          modelColumnsAvailable = false;
+          logger.warn(
+            { event: "dispatcher.model_columns_missing", err: msg },
+            "agent_runs.model/fallback_reason missing — apply migration 0031 to persist model metadata; skipping until then",
+          );
+        } else {
+          logger.error(
+            {
+              event: "dispatcher.agent_runs_meta_update_error",
+              err: msg,
+              run_id: run.runId,
+            },
+            "failed to UPDATE agent_runs model metadata",
+          );
+        }
+      }
+    }
+
     run.events.close();
     inFlight = null;
 
@@ -889,10 +1146,10 @@ async function workerLoop(): Promise<void> {
       try {
         // Budget is tracked per runtime provider: codex runs count against
         // the "codex" window, claude runs against "claude" — separate
-        // subscriptions, separate daily caps.
-        await incrementBudget(
-          (run.request.runtime ?? "claude") as BudgetProvider,
-        );
+        // subscriptions, separate daily caps. `budgetProvider` reflects where
+        // the run ACTUALLY ran, so a rate-limit failover charges the codex
+        // window, not claude.
+        await incrementBudget(budgetProvider);
         await refreshBudgetState();
       } catch (e) {
         logger.error(
