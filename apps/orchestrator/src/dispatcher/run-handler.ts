@@ -314,6 +314,15 @@ export async function* runHandler(
       options: {
         cwd: runCwd,
         abortController,
+        // Fully autonomous, headless dispatch: there is no human to answer a
+        // tool-permission prompt. Without this the SDK defaults to "default"
+        // mode and Write/Edit/Bash silently deadlock (the agent even reports a
+        // false "created (pending approval)"), so repo-edit runs produce no
+        // diff and no PR. Safety is enforced elsewhere, not via interactive
+        // prompts: cwd is sandboxed to the target clone under REPOS_BASE
+        // (resolveRunCwd), the command-center — not the agent — opens the PR,
+        // and the CEO approves every merge.
+        permissionMode: "bypassPermissions",
         systemPrompt: buildSystemPrompt(request),
         // ALWAYS pass a resolved model. Absent hint -> the pinned default
         // (Opus 4.8); an explicit "use Fable 5 …" hint passes through. Never
