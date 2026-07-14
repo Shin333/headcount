@@ -126,13 +126,7 @@ function buildSystemPrompt(request: ResolvedRunRequest): {
   // Bash-capable engineering persona), and to produce a real PR.
   if (request.repo && request.repo_path) {
     append += `\n\n# Repository-editing task
-The working directory is a writable git checkout of the "${request.repo}" repository at ${request.repo_path}. This is a real code change that must produce a real PR with real file diffs. Dispatch to a Bash-capable engineering agent and instruct it, in your Agent-tool prompt, to:
-1. Create a feature branch: git checkout -b <short-kebab-branch>.
-2. Make the actual file edits with Write/Edit (real changes, not a description).
-3. Stage + commit: git add -A && git commit -m "<clear message>".
-4. Push: git push -u origin <branch>.
-5. Open a PR: gh pr create --fill (or an explicit --title/--body), and report the PR URL.
-Do NOT edit files outside ${request.repo_path}.`;
+The working directory is a writable git checkout of the "${request.repo}" repository at ${request.repo_path}. Dispatch to a Bash-capable engineering agent and instruct it, in your Agent-tool prompt, to make the ACTUAL file changes with Write/Edit (real edits, not a description). Do NOT run git or gh and do NOT commit — the command-center opens the PR automatically from the resulting diff once the run finishes. Edit only files inside ${request.repo_path}.`;
   }
   return { type: "preset", preset: "claude_code", append };
 }
