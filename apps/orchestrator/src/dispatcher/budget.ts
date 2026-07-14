@@ -44,65 +44,55 @@ function tomorrowUtcMidnight(): Date {
 }
 
 /**
- * Reads (or upserts an empty row for) the current UTC-day window.
- * Returns whether a new run is allowed and the current state.
+ * Daily budget ENFORCEMENT DISABLED — always returns `allowed: true` (2026-07-14).
+ *
+ * These per-provider daily caps were built for the metered-API era, where
+ * per-token / per-call spend needed capping. On the Claude Max subscription
+ * (flat rate, zero per-token cost) they protect against nothing and only stall
+ * the fleet — e.g. Eleanor, the routing hub, hitting the daily cap blocked
+ * EVERY dispatch. So this now always allows: no agent is ever blocked by a
+ * token/call budget, and `queue.ts`'s `budget_exhausted` pause is unreachable.
+ *
+ * The `rate_budget` table is preserved for historical logging: it is still read
+ * here (best-effort, only to populate the status display) and still incremented
+ * by `incrementBudget()`. It is simply never a blocker again.
+ *
+ * SEPARATE and untouched: real subscription rate-limit protection — the SDK's
+ * rate_limit_event + the Opus 4.8 -> GPT-5.6 (Codex) failover in
+ * dispatcher/model-policy.ts. This change does not affect that path.
  */
 export async function checkBudget(
   provider: BudgetProvider,
 ): Promise<BudgetCheckResult> {
-  const windowStart = todayUtcMidnight();
-  const envCap = config.claudeDailyBudgetCap;
   const windowResetsAt = tomorrowUtcMidnight();
-
-  const { data, error } = await db
-    .from("rate_budget")
-    .select("calls_used, calls_cap")
-    .eq("provider", provider)
-    .eq("window_start", windowStart.toISOString())
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(`rate_budget select failed: ${error.message}`);
-  }
-
   let callsUsed = 0;
-  let callsCap = envCap;
+  let callsCap = config.claudeDailyBudgetCap;
 
-  if (data) {
-    callsUsed = (data as { calls_used: number }).calls_used;
-    callsCap = (data as { calls_cap: number }).calls_cap;
-  } else {
-    // Cold-start for this window. Insert empty row so subsequent increments
-    // can rely on the row existing. Single-worker mode means the race window
-    // is ~ms; the unique (provider, window_start) constraint catches it.
-    const { error: insertErr } = await db.from("rate_budget").insert({
-      tenant_id: TENANT_ID,
-      provider,
-      window_start: windowStart.toISOString(),
-      calls_used: 0,
-      calls_cap: envCap,
-    });
-    if (insertErr) {
-      logger.warn(
-        { event: "dispatcher.budget_insert_conflict", err: insertErr.message },
-        "rate_budget cold-start insert conflict; re-reading",
-      );
-      const { data: retry, error: retryErr } = await db
-        .from("rate_budget")
-        .select("calls_used, calls_cap")
-        .eq("provider", provider)
-        .eq("window_start", windowStart.toISOString())
-        .maybeSingle();
-      if (retryErr) throw new Error(`rate_budget re-read failed: ${retryErr.message}`);
-      if (retry) {
-        callsUsed = (retry as { calls_used: number }).calls_used;
-        callsCap = (retry as { calls_cap: number }).calls_cap;
-      }
+  // Best-effort read for the status display ONLY. Enforcement is off, so a
+  // failure here must never stall dispatch — swallow it rather than throwing
+  // the way the old enforcing version did.
+  try {
+    const windowStart = todayUtcMidnight();
+    const { data } = await db
+      .from("rate_budget")
+      .select("calls_used, calls_cap")
+      .eq("provider", provider)
+      .eq("window_start", windowStart.toISOString())
+      .maybeSingle();
+    if (data) {
+      callsUsed = (data as { calls_used: number }).calls_used;
+      callsCap = (data as { calls_cap: number }).calls_cap;
     }
+  } catch (err) {
+    logger.warn(
+      { event: "dispatcher.budget_read_skipped", err: (err as Error).message },
+      "rate_budget read failed; enforcement is disabled so proceeding anyway",
+    );
   }
 
   return {
-    allowed: callsUsed < callsCap,
+    // Enforcement disabled — see function doc. Never block on budget.
+    allowed: true,
     usage_count: callsUsed,
     cap: callsCap,
     window_resets_at: windowResetsAt,
